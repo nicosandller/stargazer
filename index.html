@@ -87,6 +87,32 @@
   #info dt { opacity: 0.55; }
   #info dd { font-variant-numeric: tabular-nums; }
 
+  #sidebar {
+    left: 12px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+  #sidebar .nav {
+    display: flex; align-items: center; gap: 8px;
+    background: transparent; border: none;
+    color: var(--ui-text);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+  }
+  #sidebar .nav:hover { background: rgba(110, 168, 255, 0.18); }
+  #sidebar .nav.active { background: rgba(110, 168, 255, 0.3); color: #fff; }
+  #sidebar .nav .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+  }
+  #sidebar hr {
+    border: none; border-top: 1px solid var(--ui-border); margin: 5px 4px;
+  }
   #hint {
     bottom: 12px; right: 12px;
     font-size: 11.5px;
@@ -104,8 +130,12 @@
   }
   @media (max-width: 640px) {
     #hint { display: none; }
-    #readout { top: auto; bottom: 12px; }
-    #info { max-width: calc(100vw - 24px); bottom: 64px; }
+    #sidebar {
+      top: auto; bottom: 12px; left: 12px; right: 12px; transform: none;
+      flex-direction: row; overflow-x: auto; max-height: none;
+    }
+    #readout { top: auto; bottom: 70px; }
+    #info { max-width: calc(100vw - 24px); bottom: 70px; }
   }
 </style>
 <script type="importmap">
@@ -137,6 +167,8 @@
     <button class="btn" data-mult="100">×100</button>
   </span>
 </div>
+
+<div id="sidebar" class="panel"></div>
 
 <div id="readout" class="panel">
   <div id="readout-focus"></div>
@@ -202,6 +234,10 @@ const PLANETS = [
       { name: "Phobos", aKm: 9376, period: 0.3189, radiusKm: 11 },
       { name: "Deimos", aKm: 23463, period: 1.2624, radiusKm: 6 },
     ] },
+  { name: "Ceres", color: 0x9a9a8e, radiusKm: 473, dwarf: true,
+    el: [2.7675, 0.0758, 10.594, 249.9, 153.9, 80.31],
+    rate: [0, 0, 0, 7822, 0, 0],
+    blurb: "The largest object in the asteroid belt — a dwarf planet hiding briny water under its crust." },
   { name: "Jupiter", color: 0xd9b38c, radiusKm: 69911,
     el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
     rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
@@ -253,14 +289,22 @@ const PLANETS = [
     moons: [
       { name: "Charon", aKm: 19591, period: 6.387, radiusKm: 606 },
     ] },
+  { name: "Eris", color: 0xd8d8e8, radiusKm: 1163, dwarf: true,
+    el: [67.86, 0.4361, 44.04, 21.8, 187.59, 35.95],
+    rate: [0, 0, 0, 64.5, 0, 0],
+    blurb: "The most massive known dwarf planet, three times farther out than Pluto. Its discovery is what got Pluto reclassified." },
+  { name: "Halley", color: 0xaaccee, radiusKm: 5.5, dwarf: true, comet: true,
+    el: [17.834, 0.96714, 162.26, 236.2, 169.75, 58.42],
+    rate: [0, 0, 0, 477.95, 0, 0],
+    blurb: "The famous comet — back every ~75 years, next perihelion in 2061. It orbits backwards, dipping inside Venus and out past Neptune." },
 ];
 
 /* --- orbital mechanics (ecliptic frame, AU) --- */
 function julianCenturies(ms) { return (ms / 86400000 + 2440587.5 - 2451545.0) / 36525; }
 function daysSinceJ2000(ms)  { return ms / 86400000 + 2440587.5 - 2451545.0; }
 function solveKepler(M, e) {
-  let E = M + e * Math.sin(M);
-  for (let i = 0; i < 8; i++) {
+  let E = e > 0.8 ? Math.PI * Math.sign(M || 1) : M + e * Math.sin(M);
+  for (let i = 0; i < 30; i++) {
     const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
     E -= dE;
     if (Math.abs(dE) < 1e-9) break;
@@ -280,7 +324,10 @@ function elementsAt(p, T) {
 // 3D heliocentric ecliptic position [x,y,z] in AU for mean anomaly M
 function eclPos(el, M) {
   M = ((M % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
-  const E = solveKepler(M, el.e);
+  return eclPosE(el, solveKepler(M, el.e));
+}
+// same, but from eccentric anomaly (uniform-E sampling keeps ellipses smooth)
+function eclPosE(el, E) {
   const xp = el.a * (Math.cos(E) - el.e);
   const yp = el.a * Math.sqrt(1 - el.e * el.e) * Math.sin(E);
   const cw = Math.cos(el.w),  sw = Math.sin(el.w);
@@ -317,7 +364,7 @@ renderer.toneMappingExposure = 1.1;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1e-5, 1e6);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1e-6, 6e7);
 camera.position.set(0, 1500, 2900);
 camera.layers.enable(1);
 
@@ -325,7 +372,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.zoomToCursor = true;
-controls.maxDistance = 30000;
+controls.maxDistance = 7e6;   // far enough to take in the Oort cloud
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -353,7 +400,7 @@ scene.add(sysLight.target);
   const n = 4000, pos = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const u = Math.random() * 2 - 1, t = Math.random() * 2 * Math.PI;
-    const r = Math.sqrt(1 - u * u), R = 4e5;
+    const r = Math.sqrt(1 - u * u), R = 2.5e7;
     pos[i * 3] = R * r * Math.cos(t); pos[i * 3 + 1] = R * u; pos[i * 3 + 2] = R * r * Math.sin(t);
   }
   const g = new THREE.BufferGeometry();
@@ -362,6 +409,106 @@ scene.add(sysLight.target);
                                        transparent: true, opacity: 0.7 });
   scene.add(new THREE.Points(g, m));
 }
+
+/* --- small-body populations: asteroid belt, Kuiper belt, Oort cloud --- */
+// heliocentric particle fields; rebased with the floating origin each frame
+const helioStatics = [];
+function gauss() { return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; }
+function makeDiskBelt(n, rInAU, rOutAU, rel) {
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const a = (rInAU + Math.random() * (rOutAU - rInAU)) * AU_U;
+    const th = Math.random() * 2 * Math.PI;
+    pos[i * 3] = a * Math.cos(th);
+    pos[i * 3 + 1] = a * rel * gauss();     // vertical scatter ~ inclination spread
+    pos[i * 3 + 2] = a * Math.sin(th);
+  }
+  return pos;
+}
+function makeShell(n, rInAU, rOutAU) {
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const u = Math.random() * 2 - 1, t = Math.random() * 2 * Math.PI;
+    const s = Math.sqrt(1 - u * u);
+    const r = (rInAU + (rOutAU - rInAU) * Math.pow(Math.random(), 2)) * AU_U;
+    pos[i * 3] = r * s * Math.cos(t); pos[i * 3 + 1] = r * u; pos[i * 3 + 2] = r * s * Math.sin(t);
+  }
+  return pos;
+}
+function addParticles(positions, opacity, size = 1.4, color = 0x8890a8) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const pts = new THREE.Points(g, new THREE.PointsMaterial({
+    color, size, sizeAttenuation: false, transparent: true, opacity }));
+  scene.add(pts);
+  helioStatics.push(pts);
+  return pts;
+}
+addParticles(makeDiskBelt(3500, 2.1, 3.35, 0.07), 0.35);              // asteroid belt
+addParticles(makeDiskBelt(3000, 30, 50, 0.06), 0.3);                  // Kuiper belt
+addParticles(makeShell(9000, 2000, 20000), 0.4, 1.6, 0xa9c8e8);       // Oort cloud (inner part)
+
+/* --- procedural Earth: continents, ice caps, cloud layer --- */
+function hash3(x, y, z) {
+  let n = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(z, 1440662683)) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  n ^= n >>> 16;
+  return (n >>> 0) / 4294967295;
+}
+function noise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf), sz = zf * zf * (3 - 2 * zf);
+  const c = (dx, dy, dz) => hash3(xi + dx, yi + dy, zi + dz);
+  const l = (a, b, t) => a + (b - a) * t;
+  return l(
+    l(l(c(0,0,0), c(1,0,0), sx), l(c(0,1,0), c(1,1,0), sx), sy),
+    l(l(c(0,0,1), c(1,0,1), sx), l(c(0,1,1), c(1,1,1), sx), sy), sz);
+}
+function fbm(x, y, z, oct) {
+  let v = 0, amp = 0.5, f = 1, tot = 0;
+  for (let i = 0; i < oct; i++) {
+    v += amp * noise3(x * f, y * f, z * f);
+    tot += amp; amp *= 0.5; f *= 2.03;
+  }
+  return v / tot;
+}
+function makeEarthTextures() {
+  const W = 512, H = 256;
+  const surf = document.createElement("canvas"), clouds = document.createElement("canvas");
+  surf.width = clouds.width = W; surf.height = clouds.height = H;
+  const sctx = surf.getContext("2d"), cctx = clouds.getContext("2d");
+  const sd = sctx.createImageData(W, H), cd = cctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const lat = (0.5 - y / H) * Math.PI;
+    for (let x = 0; x < W; x++) {
+      const lon = (x / W) * 2 * Math.PI;
+      // sample noise on the sphere itself so the texture wraps seamlessly
+      const dx = Math.cos(lat) * Math.cos(lon), dy = Math.sin(lat), dz = Math.cos(lat) * Math.sin(lon);
+      const i = (y * W + x) * 4;
+      const n = fbm(dx * 2.3 + 5, dy * 2.3 + 5, dz * 2.3 + 5, 4);
+      // blend land/ocean across the shoreline to avoid blocky coastlines
+      const m = fbm(dx * 6 + 9, dy * 6 + 9, dz * 6 + 9, 3);
+      const lr = 55 + m * 95, lg = 105 + m * 65, lb = 45 + m * 35;
+      const t = Math.min(n / 0.53, 1);
+      const or_ = 18 + t * 18, og = 50 + t * 35, ob = 100 + t * 50;
+      const k = Math.min(Math.max((n - 0.525) / 0.012, 0), 1);
+      let r = or_ + (lr - or_) * k, g = og + (lg - og) * k, b = ob + (lb - ob) * k;
+      if (Math.abs(dy) + fbm(dx * 4 + 20, dy * 4 + 20, dz * 4 + 20, 2) * 0.1 > 0.97) {
+        r = 235; g = 240; b = 246;                        // polar ice
+      }
+      sd.data[i] = r; sd.data[i + 1] = g; sd.data[i + 2] = b; sd.data[i + 3] = 255;
+      const c = fbm(dx * 3.1 + 31, dy * 3.6 + 31, dz * 3.1 + 31, 4);
+      const ca = Math.min(Math.max((c - 0.52) * 4, 0), 1);
+      cd.data[i] = 255; cd.data[i + 1] = 255; cd.data[i + 2] = 255; cd.data[i + 3] = ca * 235;
+    }
+  }
+  sctx.putImageData(sd, 0, 0); cctx.putImageData(cd, 0, 0);
+  const st = new THREE.CanvasTexture(surf); st.colorSpace = THREE.SRGBColorSpace;
+  const ct = new THREE.CanvasTexture(clouds); ct.colorSpace = THREE.SRGBColorSpace;
+  return { surface: st, clouds: ct };
+}
+let earthClouds = null;
 
 /* --- bodies --- */
 const sphereGeo = new THREE.SphereGeometry(1, 64, 32);
@@ -404,9 +551,19 @@ bodies.push(sunBody);
 
 for (const p of PLANETS) {
   p.radiusU = kmU(p.radiusKm);
-  const mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.95, metalness: 0 });
+  let mat;
+  if (p.name === "Earth") {
+    const tex = makeEarthTextures();
+    mat = new THREE.MeshStandardMaterial({ map: tex.surface, roughness: 0.9, metalness: 0 });
+    earthClouds = new THREE.Mesh(sphereGeo, new THREE.MeshStandardMaterial({
+      map: tex.clouds, transparent: true, depthWrite: false, roughness: 1, metalness: 0 }));
+    earthClouds.scale.setScalar(1.015);
+  } else {
+    mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.95, metalness: 0 });
+  }
   const mesh = new THREE.Mesh(sphereGeo, mat);
   mesh.castShadow = mesh.receiveShadow = true;
+  if (earthClouds && p.name === "Earth") mesh.add(earthClouds);
   scene.add(mesh);
 
   if (p.ring) {
@@ -492,7 +649,7 @@ function refreshOrbits(T) {
     const el = elementsAt(p, T);
     const pts = [];
     for (let j = 0; j <= 256; j++) {
-      pts.push(eclToScene(eclPos(el, (j / 256) * 2 * Math.PI)));
+      pts.push(eclToScene(eclPosE(el, (j / 256) * 2 * Math.PI)));
     }
     orbitLines[i].geometry.setFromPoints(pts);
   });
@@ -543,7 +700,9 @@ function focusOn(b, keepDistance = false) {
   controls.target.set(0, 0, 0);
   controls.minDistance = b.effR * 2.5;
   applyLayers();
+  infoIsCustom = false;
   showInfo(b);
+  setSidebarActive(b.name);
 }
 
 function applyLayers() {
@@ -557,6 +716,7 @@ function applyLayers() {
 }
 
 /* --- info panel --- */
+let infoIsCustom = false;   // region (belt/cloud) text — don't auto-refresh over it
 const infoEl = document.getElementById("info");
 document.getElementById("info-close").addEventListener("click", () => {
   infoEl.style.display = "none";
@@ -585,6 +745,55 @@ function showInfo(b) {
       `<dt>Moons shown</dt><dd>${b.planet.moons ? b.planet.moons.length : 0}</dd>`;
   }
   infoEl.style.display = "block";
+}
+
+/* --- sidebar: quick navigation --- */
+const REGIONS = [
+  { name: "Asteroid Belt", dist: 1100, color: "#8890a8", span: "2.1 – 3.3 AU",
+    blurb: "Millions of rocky bodies between Mars and Jupiter — leftovers that never formed a planet." },
+  { name: "Kuiper Belt", dist: 16000, color: "#8890a8", span: "30 – 50 AU",
+    blurb: "A disk of icy bodies beyond Neptune. Pluto is its most famous resident." },
+  { name: "Oort Cloud", dist: 5.2e6, color: "#8890a8", span: "≈2,000 – 100,000 AU",
+    blurb: "A vast spherical halo of icy bodies, the source of long-period comets. Only its inner part is shown — it reaches halfway to the next star." },
+];
+function viewRegion(r) {
+  focusOn(sunBody);
+  camera.position.setLength(r.dist);
+  document.getElementById("info-name").textContent = r.name;
+  document.getElementById("info-blurb").textContent = r.blurb;
+  document.getElementById("info-stats").innerHTML = `<dt>Extent</dt><dd>${r.span}</dd>`;
+  infoEl.style.display = "block";
+  infoIsCustom = true;
+  setSidebarActive(r.name);
+}
+const sidebarEl = document.getElementById("sidebar");
+function navBtn(name, color, onClick) {
+  const b = document.createElement("button");
+  b.className = "nav";
+  b.dataset.name = name;
+  b.innerHTML = `<span class="dot" style="background:${color}"></span>${name}`;
+  b.addEventListener("click", onClick);
+  sidebarEl.appendChild(b);
+}
+function navDivider() { sidebarEl.appendChild(document.createElement("hr")); }
+function setSidebarActive(name) {
+  sidebarEl.querySelectorAll(".nav").forEach(b =>
+    b.classList.toggle("active", b.dataset.name === name));
+}
+{
+  const css = c => "#" + c.toString(16).padStart(6, "0");
+  navBtn("Sun", "#ffe9b0", () => focusOn(sunBody));
+  for (const n of ["Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]) {
+    const b = bodies.find(x => x.name === n);
+    navBtn(n, css(b.planet.color), () => focusOn(b));
+  }
+  navDivider();
+  for (const n of ["Ceres", "Pluto", "Eris", "Halley"]) {
+    const b = bodies.find(x => x.name === n);
+    navBtn(n, css(b.planet.color), () => focusOn(b));
+  }
+  navDivider();
+  for (const r of REGIONS) navBtn(r.name, r.color, () => viewRegion(r));
 }
 
 /* --- picking on the canvas (screen-space nearest body) --- */
@@ -647,6 +856,8 @@ function updatePositions(T, d) {
 
 function updateLabels() {
   const w = window.innerWidth, h = window.innerHeight;
+  // zoomed out past ~650 AU the planet labels all collapse onto the Sun — hide them
+  const farOut = camera.position.distanceTo(controls.target) > 1e5;
   for (const b of bodies) {
     tmp.copy(b.abs).sub(focusCenter).sub(controls.target);
     const dist = tmp.length();
@@ -658,7 +869,7 @@ function updateLabels() {
     const pxR = (b.effR / camDist) * (h / 2) / Math.tan(camera.fov * DEG / 2);
     b.screen = { x, y, r: pxR, visible: onScreen };
 
-    let show = onScreen;
+    let show = onScreen && !(farOut && b.kind !== "sun");
     if (show && b.kind === "moon") {
       const ps = b.planet.body.screen;
       show = ps && Math.hypot(ps.x - x, ps.y - y) > 22 || focus === b;
@@ -714,13 +925,15 @@ function frame(now) {
   const sunCamDist = sunBody.mesh.position.distanceTo(camera.position);
   sunBody.glow.scale.setScalar(Math.max(sunBody.effR * 14, sunCamDist * 0.045));
   for (const line of orbitLines) line.position.copy(focusCenter).negate();
+  for (const pts of helioStatics) pts.position.copy(focusCenter).negate();
 
+  if (earthClouds) earthClouds.rotation.y += dt * 2e-6;
   updateSysLight();
   controls.update();
   updateLabels();
 
   // keep the info panel's live values (e.g. distance from Sun) fresh
-  if (infoEl.style.display === "block" && ++infoTick % 30 === 0) showInfo(focus);
+  if (infoEl.style.display === "block" && !infoIsCustom && ++infoTick % 30 === 0) showInfo(focus);
 
   // HUD
   const dte = new Date(simTime);
