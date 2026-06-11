@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Stargazer — Live Solar System</title>
-<meta name="description" content="An explorable, real-time model of the solar system. Planet and moon positions are computed for your current time.">
+<title>Stargazer — Live 3D Solar System</title>
+<meta name="description" content="An explorable, real-time 3D model of the solar system at true scale. Planet and moon positions are computed for your current time.">
 <style>
   :root {
     --ui-bg: rgba(10, 14, 26, 0.78);
@@ -13,10 +13,24 @@
     --accent: #6ea8ff;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; overflow: hidden; background: #04060d; }
+  html, body { height: 100%; overflow: hidden; background: #03050b; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ui-text); }
-  #space { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
-  #space.dragging { cursor: grabbing; }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; }
+
+  .label {
+    position: fixed;
+    font-size: 11px;
+    color: rgba(201, 212, 240, 0.85);
+    text-shadow: 0 0 4px #000, 0 0 2px #000;
+    transform: translate(8px, -6px);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    z-index: 2;
+  }
+  .label:hover { color: #fff; }
+  .label.moon { font-size: 10px; opacity: 0.8; }
 
   .panel {
     position: fixed;
@@ -27,6 +41,7 @@
     -webkit-backdrop-filter: blur(12px);
     padding: 10px 14px;
     user-select: none;
+    z-index: 10;
   }
   #hud-top {
     top: 12px; left: 50%; transform: translateX(-50%);
@@ -55,7 +70,8 @@
   }
   .btn:hover { background: rgba(110, 168, 255, 0.25); }
   .btn.active { background: var(--accent); color: #04060d; border-color: var(--accent); }
-  #speed-group { display: flex; gap: 4px; }
+  .btn-group { display: flex; gap: 4px; align-items: center; }
+  .btn-group .lbl { font-size: 11px; opacity: 0.55; margin-right: 2px; }
 
   #info {
     bottom: 12px; left: 12px;
@@ -79,27 +95,34 @@
     line-height: 1.6;
     pointer-events: none;
   }
-  #scalebar {
+  #readout {
     top: 64px; right: 12px;
     font-size: 11px;
     font-variant-numeric: tabular-nums;
-    text-align: center;
-    padding: 6px 12px;
+    text-align: right;
+    line-height: 1.5;
   }
-  #scalebar .bar { height: 2px; background: var(--ui-text); margin-bottom: 4px; border-radius: 1px; }
   @media (max-width: 640px) {
     #hint { display: none; }
-    #scalebar { top: auto; bottom: 12px; }
+    #readout { top: auto; bottom: 12px; }
     #info { max-width: calc(100vw - 24px); bottom: 64px; }
   }
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
-<canvas id="space"></canvas>
+<div id="view"></div>
 
 <div id="hud-top" class="panel">
   <span id="clock"><span class="live-dot"></span><span id="clock-text"></span></span>
-  <span id="speed-group">
+  <span class="btn-group" id="speed-group">
     <button class="btn" data-speed="-86400">−1d/s</button>
     <button class="btn" data-speed="0">⏸</button>
     <button class="btn active" data-speed="1">Live</button>
@@ -107,11 +130,17 @@
     <button class="btn" data-speed="2592000">+30d/s</button>
   </span>
   <button class="btn" id="btn-now">Now</button>
+  <span class="btn-group" id="size-group">
+    <span class="lbl">size</span>
+    <button class="btn active" data-mult="1">real</button>
+    <button class="btn" data-mult="10">×10</button>
+    <button class="btn" data-mult="100">×100</button>
+  </span>
 </div>
 
-<div id="scalebar" class="panel">
-  <div class="bar" id="scalebar-bar"></div>
-  <span id="scalebar-text"></span>
+<div id="readout" class="panel">
+  <div id="readout-focus"></div>
+  <div id="readout-dist"></div>
 </div>
 
 <div id="info" class="panel">
@@ -122,42 +151,50 @@
 </div>
 
 <div id="hint" class="panel">
-  drag to pan · scroll / pinch to zoom<br>
-  click a body to follow it · zoom in to see moons
+  drag to orbit · scroll / pinch to zoom · right-drag to pan<br>
+  click a name to fly there · sizes &amp; distances are real — zoom in!
 </div>
 
-<script>
+<script type="module">
 "use strict";
 /* ============================================================
-   Stargazer — real-time explorable solar system
+   Stargazer — real-time explorable 3D solar system, true scale.
    Planet positions: JPL approximate Keplerian elements (J2000
-   ecliptic, valid 1800–2050 AD), projected onto the ecliptic
-   plane. Moon positions use mean circular orbits — good for
-   visualization, not for navigation.
+   ecliptic, valid 1800–2050 AD), full 3D including inclination.
+   Moons: mean circular orbits in their planet's equatorial
+   plane where it matters (Saturn, Uranus) — visualization-grade.
+   Lighting is a real point source at the Sun, so day/night
+   terminators are correct; a focused shadow camera renders
+   true cast shadows (moon eclipses) on the system you visit.
+   World units: 1 unit = 1,000,000 km.
    ============================================================ */
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const AU_KM = 149597870.7;
+const UNIT_KM = 1e6;                 // world unit in km
+const AU_U = AU_KM / UNIT_KM;        // AU in world units (~149.6)
 const DEG = Math.PI / 180;
-const km = v => v / AU_KM;
+const kmU = v => v / UNIT_KM;
 
 /* --- JPL approximate elements: [a, e, I, L, longPeri, longNode] + rates/century --- */
 const PLANETS = [
-  { name: "Mercury", color: "#b5a698", radiusKm: 2440,
+  { name: "Mercury", color: 0xb5a698, radiusKm: 2440,
     el: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],
     rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
     blurb: "Smallest planet, closest to the Sun. A year here lasts 88 Earth days." },
-  { name: "Venus", color: "#e8c98a", radiusKm: 6052,
+  { name: "Venus", color: 0xe8c98a, radiusKm: 6052,
     el: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255],
     rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418],
     blurb: "Hottest planet, wrapped in crushing CO₂ clouds. Spins backwards, slowly." },
-  { name: "Earth", color: "#5b9bd5", radiusKm: 6371,
+  { name: "Earth", color: 0x5b9bd5, radiusKm: 6371,
     el: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0],
     rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
     blurb: "Home. The only known world with liquid-water oceans and life.",
     moons: [
       { name: "Moon", aKm: 384400, phase: 218.316, rate: 13.176396, radiusKm: 1737 },
     ] },
-  { name: "Mars", color: "#d1684a", radiusKm: 3390,
+  { name: "Mars", color: 0xd1684a, radiusKm: 3390,
     el: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891],
     rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343],
     blurb: "The red planet — rusty deserts, the solar system's tallest volcano, and two tiny captured moons.",
@@ -165,17 +202,19 @@ const PLANETS = [
       { name: "Phobos", aKm: 9376, period: 0.3189, radiusKm: 11 },
       { name: "Deimos", aKm: 23463, period: 1.2624, radiusKm: 6 },
     ] },
-  { name: "Jupiter", color: "#d9b38c", radiusKm: 69911,
+  { name: "Jupiter", color: 0xd9b38c, radiusKm: 69911,
     el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
     rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
-    blurb: "The giant — more massive than all other planets combined, with 90+ known moons.",
+    blurb: "The giant — more massive than all other planets combined. Watch its moons cast shadows on the cloud tops.",
     moons: [
       { name: "Io",       aKm: 421700,  phase: 106.077, rate: 203.488956, radiusKm: 1822 },
       { name: "Europa",   aKm: 671034,  phase: 175.732, rate: 101.374725, radiusKm: 1561 },
       { name: "Ganymede", aKm: 1070412, phase: 120.559, rate: 50.317609,  radiusKm: 2634 },
       { name: "Callisto", aKm: 1882709, phase: 84.445,  rate: 21.571071,  radiusKm: 2410 },
     ] },
-  { name: "Saturn", color: "#e3d3a3", radiusKm: 58232, ring: { inner: 1.24, outer: 2.27 },
+  { name: "Saturn", color: 0xe3d3a3, radiusKm: 58232,
+    ring: { inner: 1.24, outer: 2.27 },
+    pole: { lon: 79.5, lat: 61.96 },   // ecliptic coords of north pole
     el: [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448],
     rate: [-0.00125060, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794],
     blurb: "Famous for its rings — billions of ice fragments in orbit. Titan, its largest moon, has lakes of methane.",
@@ -188,53 +227,38 @@ const PLANETS = [
       { name: "Titan",     aKm: 1221870, period: 15.945, radiusKm: 2575 },
       { name: "Iapetus",   aKm: 3560820, period: 79.322, radiusKm: 735 },
     ] },
-  { name: "Uranus", color: "#9fd8d8", radiusKm: 25362,
+  { name: "Uranus", color: 0x9fd8d8, radiusKm: 25362,
+    pole: { lon: 257.3, lat: -15.2 },  // tipped past sideways
     el: [19.18916464, 0.04725744, 0.77263783, 313.23810451, 170.95427630, 74.01692503],
     rate: [-0.00196176, -0.00004397, -0.00242939, 428.48202785, 0.40805281, 0.04240589],
-    blurb: "An ice giant tipped on its side — it rolls around the Sun at a 98° tilt.",
+    blurb: "An ice giant tipped on its side — its moons orbit in a vertical ferris wheel around the Sun.",
     moons: [
-      { name: "Miranda", aKm: 129390, period: 1.413,  radiusKm: 236 },
-      { name: "Ariel",   aKm: 191020, period: 2.520,  radiusKm: 579 },
-      { name: "Umbriel", aKm: 266000, period: 4.144,  radiusKm: 585 },
-      { name: "Titania", aKm: 435910, period: 8.706,  radiusKm: 789 },
-      { name: "Oberon",  aKm: 583520, period: 13.46,  radiusKm: 761 },
+      { name: "Miranda", aKm: 129390, period: 1.413, radiusKm: 236 },
+      { name: "Ariel",   aKm: 191020, period: 2.520, radiusKm: 579 },
+      { name: "Umbriel", aKm: 266000, period: 4.144, radiusKm: 585 },
+      { name: "Titania", aKm: 435910, period: 8.706, radiusKm: 789 },
+      { name: "Oberon",  aKm: 583520, period: 13.46, radiusKm: 761 },
     ] },
-  { name: "Neptune", color: "#5c7fe8", radiusKm: 24622,
+  { name: "Neptune", color: 0x5c7fe8, radiusKm: 24622,
     el: [30.06992276, 0.00859048, 1.77004347, -55.12002969, 44.96476227, 131.78422574],
     rate: [0.00026291, 0.00005105, 0.00035372, 218.45945325, -0.32241464, -0.00508664],
     blurb: "The windiest world — supersonic storms. Its moon Triton orbits backwards.",
     moons: [
       { name: "Triton", aKm: 354759, period: -5.877, radiusKm: 1353 },
     ] },
-  { name: "Pluto", color: "#c8b6a6", radiusKm: 1188, dwarf: true,
+  { name: "Pluto", color: 0xc8b6a6, radiusKm: 1188, dwarf: true,
     el: [39.48211675, 0.24882730, 17.14001206, 238.92903833, 224.06891629, 110.30393684],
     rate: [-0.00031596, 0.00005170, 0.00004818, 145.20780515, -0.04062942, -0.01183482],
-    blurb: "Dwarf planet in the Kuiper belt. Its orbit is so eccentric it sometimes comes closer than Neptune.",
+    blurb: "Dwarf planet in the Kuiper belt. Its orbit is tilted 17° out of the plane — fly around and see it.",
     moons: [
       { name: "Charon", aKm: 19591, period: 6.387, radiusKm: 606 },
     ] },
 ];
 
-// normalize moon data: derive rate from period when not given, convert a to AU
-for (const p of PLANETS) {
-  if (!p.moons) continue;
-  for (const m of p.moons) {
-    m.a = km(m.aKm);
-    if (m.rate === undefined) m.rate = 360 / m.period;
-    if (m.phase === undefined) m.phase = (m.aKm * 7.3) % 360; // arbitrary fixed epoch phase
-    if (m.period === undefined) m.period = 360 / m.rate;
-  }
-}
-
-/* --- orbital mechanics --- */
-function julianCenturies(msUTC) {
-  return (msUTC / 86400000 + 2440587.5 - 2451545.0) / 36525;
-}
-function daysSinceJ2000(msUTC) {
-  return msUTC / 86400000 + 2440587.5 - 2451545.0;
-}
+/* --- orbital mechanics (ecliptic frame, AU) --- */
+function julianCenturies(ms) { return (ms / 86400000 + 2440587.5 - 2451545.0) / 36525; }
+function daysSinceJ2000(ms)  { return ms / 86400000 + 2440587.5 - 2451545.0; }
 function solveKepler(M, e) {
-  // M in radians; Newton's method
   let E = M + e * Math.sin(M);
   for (let i = 0; i < 8; i++) {
     const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
@@ -243,94 +267,349 @@ function solveKepler(M, e) {
   }
   return E;
 }
-// heliocentric ecliptic position {x, y} in AU (z dropped — top-down view)
-function planetPosition(p, T) {
-  const a  = p.el[0] + p.rate[0] * T;
-  const e  = p.el[1] + p.rate[1] * T;
-  const I  = (p.el[2] + p.rate[2] * T) * DEG;
-  const L  = (p.el[3] + p.rate[3] * T) * DEG;
-  const lp = (p.el[4] + p.rate[4] * T) * DEG;
-  const ln = (p.el[5] + p.rate[5] * T) * DEG;
-  const w = lp - ln;             // argument of perihelion
-  const M = ((L - lp) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
-  const E = solveKepler(M, e);
-  const xp = a * (Math.cos(E) - e);
-  const yp = a * Math.sqrt(1 - e * e) * Math.sin(E);
-  const cw = Math.cos(w), sw = Math.sin(w);
-  const cn = Math.cos(ln), sn = Math.sin(ln);
-  const ci = Math.cos(I);
+function elementsAt(p, T) {
   return {
-    x: (cw * cn - sw * sn * ci) * xp + (-sw * cn - cw * sn * ci) * yp,
-    y: (cw * sn + sw * cn * ci) * xp + (-sw * sn + cw * cn * ci) * yp,
-    r: Math.sqrt(xp * xp + yp * yp),
+    a:  p.el[0] + p.rate[0] * T,
+    e:  p.el[1] + p.rate[1] * T,
+    I:  (p.el[2] + p.rate[2] * T) * DEG,
+    ln: (p.el[5] + p.rate[5] * T) * DEG,
+    w:  (p.el[4] + p.rate[4] * T - (p.el[5] + p.rate[5] * T)) * DEG,
+    M:  (p.el[3] + p.rate[3] * T - (p.el[4] + p.rate[4] * T)) * DEG,
   };
 }
-function moonOffset(m, d) {
-  const ang = (m.phase + m.rate * d) * DEG;
-  return { x: m.a * Math.cos(ang), y: m.a * Math.sin(ang) };
+// 3D heliocentric ecliptic position [x,y,z] in AU for mean anomaly M
+function eclPos(el, M) {
+  M = ((M % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+  const E = solveKepler(M, el.e);
+  const xp = el.a * (Math.cos(E) - el.e);
+  const yp = el.a * Math.sqrt(1 - el.e * el.e) * Math.sin(E);
+  const cw = Math.cos(el.w),  sw = Math.sin(el.w);
+  const cn = Math.cos(el.ln), sn = Math.sin(el.ln);
+  const ci = Math.cos(el.I),  si = Math.sin(el.I);
+  return [
+    (cw * cn - sw * sn * ci) * xp + (-sw * cn - cw * sn * ci) * yp,
+    (cw * sn + sw * cn * ci) * xp + (-sw * sn + cw * cn * ci) * yp,
+    (sw * si) * xp + (cw * si) * yp,
+  ];
+}
+// ecliptic [x,y,z] (AU) -> three.js Vector3 in world units (y = ecliptic north)
+function eclToScene(v, out = new THREE.Vector3()) {
+  return out.set(v[0] * AU_U, v[2] * AU_U, -v[1] * AU_U);
+}
+function eclDirToScene(v, out = new THREE.Vector3()) {
+  return out.set(v[0], v[2], -v[1]).normalize();
+}
+function poleVector(pole) {
+  if (!pole) return [0, 0, 1];
+  const lon = pole.lon * DEG, lat = pole.lat * DEG;
+  return [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
 }
 
-/* --- precomputed orbit paths (slow-varying; sampled at current epoch) --- */
-function orbitPath(p, T, n = 240) {
-  const pts = [];
-  const saved = p.el[3];
-  for (let i = 0; i <= n; i++) {
-    // sweep mean longitude through a full revolution
-    p.el[3] = saved;
-    const fake = { el: p.el.slice(), rate: p.rate };
-    fake.el[3] = (i / n) * 360 + p.el[4]; // relative to perihelion for even sampling
-    fake.el[3] -= p.rate[3] * T;          // cancel time advance so L is what we set
-    pts.push(planetPosition(fake, T));
-  }
-  p.el[3] = saved;
-  return pts;
-}
+/* --- renderer / scene / camera --- */
+const container = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+container.appendChild(renderer.domElement);
 
-/* --- canvas & camera --- */
-const canvas = document.getElementById("space");
-const ctx = canvas.getContext("2d");
-let W = 0, H = 0, DPR = 1;
-function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W * DPR; canvas.height = H * DPR;
-  canvas.style.width = W + "px"; canvas.style.height = H + "px";
-}
-window.addEventListener("resize", resize);
-resize();
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1e-5, 1e6);
+camera.position.set(0, 1500, 2900);
+camera.layers.enable(1);
 
-const cam = {
-  x: 0, y: 0,                       // world coords (AU) at screen center
-  scale: Math.min(W, H) / 24,       // px per AU — start with Saturn's orbit in view
-  follow: null,                     // planet (or {planet, moon}) being followed
-};
-function worldToScreen(wx, wy) {
-  return [ (wx - cam.x) * cam.scale + W / 2,
-           (cam.y - wy) * cam.scale + H / 2 ]; // y up
-}
-function screenToWorld(sx, sy) {
-  return [ (sx - W / 2) / cam.scale + cam.x,
-           cam.y - (sy - H / 2) / cam.scale ];
-}
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.zoomToCursor = true;
+controls.maxDistance = 30000;
 
-/* --- starfield (fixed, regenerated on resize bucket) --- */
-let stars = [];
-function makeStars() {
-  stars = [];
-  const n = Math.floor(W * H / 3500);
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* --- lights --- */
+const sunLight = new THREE.PointLight(0xfff2e0, 3, 0, 0);
+scene.add(sunLight);                       // layer 0: everything not in focus
+const ambient = new THREE.AmbientLight(0x44506e, 0.12);
+ambient.layers.enableAll();
+scene.add(ambient);
+// shadow-casting light for the focused planet system (layer 1)
+const sysLight = new THREE.DirectionalLight(0xfff2e0, 3);
+sysLight.layers.set(1);
+sysLight.castShadow = true;
+sysLight.shadow.mapSize.set(2048, 2048);
+sysLight.visible = false;
+scene.add(sysLight);
+scene.add(sysLight.target);
+
+/* --- starfield --- */
+{
+  const n = 4000, pos = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    stars.push({ x: Math.random(), y: Math.random(),
-                 r: Math.random() * 1.1 + 0.2, a: Math.random() * 0.6 + 0.15 });
+    const u = Math.random() * 2 - 1, t = Math.random() * 2 * Math.PI;
+    const r = Math.sqrt(1 - u * u), R = 4e5;
+    pos[i * 3] = R * r * Math.cos(t); pos[i * 3 + 1] = R * u; pos[i * 3 + 2] = R * r * Math.sin(t);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({ color: 0xcdd8ff, size: 1.6, sizeAttenuation: false,
+                                       transparent: true, opacity: 0.7 });
+  scene.add(new THREE.Points(g, m));
+}
+
+/* --- bodies --- */
+const sphereGeo = new THREE.SphereGeometry(1, 64, 32);
+const bodies = [];   // { name, kind, planet?, moon?, mesh, abs:Vector3, label, radiusU, ... }
+
+function makeLabel(text, cls, onClick) {
+  const el = document.createElement("div");
+  el.className = "label " + cls;
+  el.textContent = text;
+  el.addEventListener("click", onClick);
+  document.body.appendChild(el);
+  return el;
+}
+
+// Sun
+const sunBody = {
+  name: "Sun", kind: "sun", abs: new THREE.Vector3(0, 0, 0), radiusU: kmU(696000),
+  mesh: new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: 0xffe9b0 })),
+};
+sunBody.mesh.scale.setScalar(sunBody.radiusU);
+scene.add(sunBody.mesh);
+{ // glow sprite
+  const c = document.createElement("canvas"); c.width = c.height = 128;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, "rgba(255,230,160,1)");
+  grad.addColorStop(0.3, "rgba(255,190,90,0.35)");
+  grad.addColorStop(1, "rgba(255,190,90,0)");
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending,
+    depthWrite: false, transparent: true,
+  }));
+  sp.scale.setScalar(sunBody.radiusU * 14);
+  sunBody.glow = sp;
+  scene.add(sp);
+}
+sunBody.label = makeLabel("Sun", "", () => focusOn(sunBody));
+bodies.push(sunBody);
+
+for (const p of PLANETS) {
+  p.radiusU = kmU(p.radiusKm);
+  const mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.95, metalness: 0 });
+  const mesh = new THREE.Mesh(sphereGeo, mat);
+  mesh.castShadow = mesh.receiveShadow = true;
+  scene.add(mesh);
+
+  if (p.ring) {
+    const rg = new THREE.RingGeometry(p.ring.inner, p.ring.outer, 128);
+    const rm = new THREE.MeshStandardMaterial({ color: 0xd8c8a0, roughness: 1, metalness: 0,
+      side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+    const ring = new THREE.Mesh(rg, rm);
+    ring.castShadow = ring.receiveShadow = true;
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1),
+                                       eclDirToScene(poleVector(p.pole)));
+    mesh.add(ring);   // inherits planet position & scale
+  }
+
+  const body = { name: p.name, kind: "planet", planet: p, mesh,
+                 abs: new THREE.Vector3(), radiusU: p.radiusU,
+                 label: makeLabel(p.name, "", () => focusOn(body)) };
+  p.body = body;
+  bodies.push(body);
+
+  // moon system basis vectors (planet's equatorial plane where given)
+  const pole = poleVector(p.pole);
+  let u = [pole[1], -pole[0], 0];                       // ⊥ pole, in ecliptic plane
+  const ul = Math.hypot(u[0], u[1], u[2]);
+  u = ul < 1e-6 ? [1, 0, 0] : u.map(x => x / ul);
+  const v = [ pole[1] * u[2] - pole[2] * u[1],
+              pole[2] * u[0] - pole[0] * u[2],
+              pole[0] * u[1] - pole[1] * u[0] ];
+  p.moonU = eclDirToScene(u); p.moonV = eclDirToScene(v);
+
+  if (p.moons) {
+    p.systemRadiusU = 0;
+    for (const m of p.moons) {
+      m.aU = kmU(m.aKm);
+      m.radiusU = kmU(m.radiusKm);
+      if (m.rate === undefined) m.rate = 360 / m.period;
+      if (m.phase === undefined) m.phase = (m.aKm * 7.3) % 360;
+      if (m.period === undefined) m.period = 360 / m.rate;
+      p.systemRadiusU = Math.max(p.systemRadiusU, m.aU);
+
+      const mm = new THREE.Mesh(sphereGeo,
+        new THREE.MeshStandardMaterial({ color: 0xaab4cc, roughness: 0.95, metalness: 0 }));
+      mm.castShadow = mm.receiveShadow = true;
+      scene.add(mm);
+
+      // orbit circle in the moon-system plane
+      const pts = [];
+      for (let i = 0; i <= 128; i++) {
+        const a = (i / 128) * 2 * Math.PI;
+        pts.push(new THREE.Vector3()
+          .addScaledVector(p.moonU, m.aU * Math.cos(a))
+          .addScaledVector(p.moonV, m.aU * Math.sin(a)));
+      }
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: 0x96a0be, transparent: true, opacity: 0.18 }));
+      scene.add(line);
+
+      const body = { name: m.name, kind: "moon", planet: p, moon: m, mesh: mm, orbitLine: line,
+                     abs: new THREE.Vector3(), radiusU: m.radiusU,
+                     label: makeLabel(m.name, "moon", () => focusOn(body)) };
+      m.body = body;
+      bodies.push(body);
+    }
+  } else {
+    p.systemRadiusU = p.radiusU * 30;
   }
 }
-makeStars();
-window.addEventListener("resize", makeStars);
 
-/* --- simulation time --- */
-let simTime = Date.now();   // ms UTC
-let speed = 1;              // sim-seconds per real second
+/* --- planet orbit lines (sampled ellipses, refreshed weekly) --- */
+const orbitLines = PLANETS.map(p => {
+  const line = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x96a0be, transparent: true,
+                                  opacity: p.dwarf ? 0.14 : 0.3 }));
+  scene.add(line);
+  return line;
+});
+let orbitsT = null;
+function refreshOrbits(T) {
+  if (orbitsT !== null && Math.abs(T - orbitsT) < 7 / 36525) return;
+  orbitsT = T;
+  PLANETS.forEach((p, i) => {
+    const el = elementsAt(p, T);
+    const pts = [];
+    for (let j = 0; j <= 256; j++) {
+      pts.push(eclToScene(eclPos(el, (j / 256) * 2 * Math.PI)));
+    }
+    orbitLines[i].geometry.setFromPoints(pts);
+  });
+}
+
+/* --- size exaggeration (default: real) --- */
+let sizeMult = 1;
+function effRadius(b) {
+  if (b.kind === "sun")  return Math.min(b.radiusU * sizeMult, 10);
+  if (b.kind === "moon") return Math.min(b.radiusU * sizeMult, b.moon.aU * 0.25);
+  const cap = b.planet.moons ? b.planet.moons[0].aU * 0.4 : Infinity;
+  return Math.min(b.radiusU * sizeMult, cap);
+}
+function applySizes() {
+  for (const b of bodies) {
+    b.effR = effRadius(b);
+    b.mesh.scale.setScalar(b.effR);
+  }
+  sunBody.glow.scale.setScalar(sunBody.effR * 14);
+  controls.minDistance = (focus.effR || focus.radiusU) * 2.5;
+}
+document.querySelectorAll("#size-group .btn").forEach(b => {
+  b.addEventListener("click", () => {
+    sizeMult = Number(b.dataset.mult);
+    document.querySelectorAll("#size-group .btn").forEach(x => x.classList.toggle("active", x === b));
+    applySizes();
+  });
+});
+
+/* --- focus / camera --- */
+let focus = sunBody;
+const focusCenter = new THREE.Vector3();
+
+function focusOn(b, keepDistance = false) {
+  const prev = focus;
+  focus = b;
+  // keep camera direction, jump to a sensible viewing distance
+  if (!keepDistance) {
+    let dist;
+    if (b.kind === "sun") dist = 2600;
+    else if (b.kind === "moon") dist = b.effR * 12;
+    else dist = b.planet.moons ? b.planet.systemRadiusU * 2.6 : b.effR * 18;
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    camera.position.copy(dir.multiplyScalar(dist));
+  } else {
+    camera.position.sub(b.abs).add(prev.abs);
+  }
+  controls.target.set(0, 0, 0);
+  controls.minDistance = b.effR * 2.5;
+  applyLayers();
+  showInfo(b);
+}
+
+function applyLayers() {
+  const sysPlanet = focus.kind === "sun" ? null : focus.planet;
+  for (const b of bodies) {
+    if (b.kind === "sun") continue;
+    const inSys = sysPlanet && b.planet === sysPlanet;
+    b.mesh.traverse(o => o.layers.set(inSys ? 1 : 0));
+  }
+  sysLight.visible = !!sysPlanet;
+}
+
+/* --- info panel --- */
+const infoEl = document.getElementById("info");
+document.getElementById("info-close").addEventListener("click", () => {
+  infoEl.style.display = "none";
+});
+function fmt(n, digits = 3) {
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+function showInfo(b) {
+  document.getElementById("info-name").textContent = b.name;
+  const stats = document.getElementById("info-stats");
+  const blurb = document.getElementById("info-blurb");
+  if (b.kind === "sun") {
+    blurb.textContent = "Our star. 99.86% of the solar system's mass.";
+    stats.innerHTML = "<dt>Radius</dt><dd>696,000 km</dd>";
+  } else if (b.kind === "moon") {
+    blurb.textContent = `Moon of ${b.planet.name}.`;
+    stats.innerHTML =
+      `<dt>Orbit radius</dt><dd>${fmt(b.moon.aKm, 0)} km</dd>` +
+      `<dt>Orbital period</dt><dd>${fmt(Math.abs(b.moon.period), 2)} days${b.moon.period < 0 ? " (retrograde)" : ""}</dd>` +
+      `<dt>Radius</dt><dd>${fmt(b.moon.radiusKm, 0)} km</dd>`;
+  } else {
+    blurb.textContent = b.planet.blurb || "";
+    stats.innerHTML =
+      `<dt>Distance from Sun</dt><dd>${fmt(b.sunDistAU || 0)} AU</dd>` +
+      `<dt>Radius</dt><dd>${fmt(b.planet.radiusKm, 0)} km</dd>` +
+      `<dt>Moons shown</dt><dd>${b.planet.moons ? b.planet.moons.length : 0}</dd>`;
+  }
+  infoEl.style.display = "block";
+}
+
+/* --- picking on the canvas (screen-space nearest body) --- */
+let downPos = null;
+renderer.domElement.addEventListener("pointerdown", e => { downPos = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", e => {
+  if (!downPos) return;
+  const moved = Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]);
+  downPos = null;
+  if (moved > 5) return;
+  let best = null, bestD = 26;
+  for (const b of bodies) {
+    if (b.screen && b.screen.visible) {
+      const d = Math.hypot(b.screen.x - e.clientX, b.screen.y - e.clientY) - b.screen.r;
+      if (d < bestD) { bestD = d; best = b; }
+    }
+  }
+  if (best) focusOn(best);
+  else infoEl.style.display = "none";
+});
+
+/* --- simulation time + HUD --- */
+let simTime = Date.now();
+let speed = 1;
 let lastFrame = performance.now();
-
 const clockText = document.getElementById("clock-text");
 const clockEl = document.getElementById("clock");
 document.querySelectorAll("#speed-group .btn").forEach(b => {
@@ -340,283 +619,135 @@ document.querySelectorAll("#speed-group .btn").forEach(b => {
     clockEl.classList.toggle("warped", speed !== 1);
   });
 });
-document.getElementById("btn-now").addEventListener("click", () => {
-  simTime = Date.now();
-});
+document.getElementById("btn-now").addEventListener("click", () => { simTime = Date.now(); });
 
-/* --- interaction: pan / zoom / pick --- */
-let dragging = false, dragMoved = false, lastPointer = null;
-const pointers = new Map();
-let pinchDist = 0;
+const roFocus = document.getElementById("readout-focus");
+const roDist = document.getElementById("readout-dist");
 
-canvas.addEventListener("pointerdown", e => {
-  canvas.setPointerCapture(e.pointerId);
-  pointers.set(e.pointerId, [e.clientX, e.clientY]);
-  if (pointers.size === 1) {
-    dragging = true; dragMoved = false;
-    lastPointer = [e.clientX, e.clientY];
-    canvas.classList.add("dragging");
-  } else if (pointers.size === 2) {
-    const [a, b] = [...pointers.values()];
-    pinchDist = Math.hypot(a[0] - b[0], a[1] - b[1]);
-  }
-});
-canvas.addEventListener("pointermove", e => {
-  if (!pointers.has(e.pointerId)) return;
-  pointers.set(e.pointerId, [e.clientX, e.clientY]);
-  if (pointers.size === 2) {
-    const [a, b] = [...pointers.values()];
-    const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-    if (pinchDist > 0) zoomAt((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, d / pinchDist);
-    pinchDist = d;
-    dragMoved = true;
-  } else if (dragging) {
-    const dx = e.clientX - lastPointer[0], dy = e.clientY - lastPointer[1];
-    if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
-    if (dragMoved) {
-      cam.follow = null;
-      cam.x -= dx / cam.scale;
-      cam.y += dy / cam.scale;
+/* --- main loop --- */
+const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3();
+let infoTick = 0;
+
+function updatePositions(T, d) {
+  for (const p of PLANETS) {
+    const el = elementsAt(p, T);
+    const xyz = eclPos(el, el.M);
+    p.body.sunDistAU = Math.hypot(xyz[0], xyz[1], xyz[2]);
+    eclToScene(xyz, p.body.abs);
+    if (p.moons) {
+      for (const m of p.moons) {
+        const ang = (m.phase + m.rate * d) * DEG;
+        m.body.abs.copy(p.body.abs)
+          .addScaledVector(p.moonU, m.aU * Math.cos(ang))
+          .addScaledVector(p.moonV, m.aU * Math.sin(ang));
+      }
     }
-    lastPointer = [e.clientX, e.clientY];
-  }
-});
-function endPointer(e) {
-  pointers.delete(e.pointerId);
-  if (pointers.size < 2) pinchDist = 0;
-  if (pointers.size === 0) {
-    canvas.classList.remove("dragging");
-    if (dragging && !dragMoved) pick(e.clientX, e.clientY);
-    dragging = false;
-  }
-}
-canvas.addEventListener("pointerup", endPointer);
-canvas.addEventListener("pointercancel", endPointer);
-
-canvas.addEventListener("wheel", e => {
-  e.preventDefault();
-  zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
-}, { passive: false });
-
-function zoomAt(sx, sy, factor) {
-  const [wx, wy] = screenToWorld(sx, sy);
-  cam.scale = Math.max(2, Math.min(cam.scale * factor, 5e9));
-  if (!cam.follow) {
-    const [wx2, wy2] = screenToWorld(sx, sy);
-    cam.x += wx - wx2;
-    cam.y += wy - wy2;
   }
 }
 
-/* --- picking & info panel --- */
-const infoEl = document.getElementById("info");
-document.getElementById("info-close").addEventListener("click", () => {
-  infoEl.style.display = "none";
-  cam.follow = null;
-});
-let drawnBodies = []; // {sx, sy, r, planet, moon?} filled each frame
+function updateLabels() {
+  const w = window.innerWidth, h = window.innerHeight;
+  for (const b of bodies) {
+    tmp.copy(b.abs).sub(focusCenter).sub(controls.target);
+    const dist = tmp.length();
+    tmp.copy(b.abs).sub(focusCenter).project(camera);
+    const onScreen = tmp.z < 1 && tmp.x > -1.05 && tmp.x < 1.05 && tmp.y > -1.05 && tmp.y < 1.05;
+    const x = (tmp.x + 1) / 2 * w, y = (1 - tmp.y) / 2 * h;
+    // apparent pixel radius for picking
+    const camDist = tmp2.copy(b.abs).sub(focusCenter).sub(camera.position).length();
+    const pxR = (b.effR / camDist) * (h / 2) / Math.tan(camera.fov * DEG / 2);
+    b.screen = { x, y, r: pxR, visible: onScreen };
 
-function pick(sx, sy) {
-  let best = null, bestD = 28; // px hit radius
-  for (const b of drawnBodies) {
-    const d = Math.hypot(b.sx - sx, b.sy - sy) - b.r;
-    if (d < bestD) { bestD = d; best = b; }
-  }
-  if (best) {
-    cam.follow = best;
-    showInfo(best);
-    // zoom in a bit if very far out relative to the body
-    if (best.moon && cam.scale < 2000) cam.scale = 40000;
-  } else {
-    infoEl.style.display = "none";
-    cam.follow = null;
+    let show = onScreen;
+    if (show && b.kind === "moon") {
+      const ps = b.planet.body.screen;
+      show = ps && Math.hypot(ps.x - x, ps.y - y) > 22 || focus === b;
+    }
+    b.label.style.display = show ? "block" : "none";
+    if (show) b.label.style.transform = `translate(${x + 8}px, ${y - 7}px)`;
   }
 }
 
-function fmt(n, digits = 3) {
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
-function showInfo(b) {
-  const planet = b.planet, moon = b.moon;
-  document.getElementById("info-name").textContent = moon ? moon.name : (planet ? planet.name : "Sun");
-  const stats = document.getElementById("info-stats");
-  const blurb = document.getElementById("info-blurb");
-  if (!planet) {
-    blurb.textContent = "Our star. 99.86% of the solar system's mass.";
-    stats.innerHTML = "<dt>Radius</dt><dd>696,000 km</dd>";
-  } else if (moon) {
-    blurb.textContent = `Moon of ${planet.name}.`;
-    stats.innerHTML =
-      `<dt>Orbit radius</dt><dd>${fmt(moon.aKm, 0)} km</dd>` +
-      `<dt>Orbital period</dt><dd>${fmt(Math.abs(moon.period), 2)} days${moon.period < 0 ? " (retrograde)" : ""}</dd>` +
-      `<dt>Radius</dt><dd>${fmt(moon.radiusKm, 0)} km</dd>`;
-  } else {
-    blurb.textContent = planet.blurb || "";
-    const T = julianCenturies(simTime);
-    const pos = planetPosition(planet, T);
-    stats.innerHTML =
-      `<dt>Distance from Sun</dt><dd>${fmt(pos.r)} AU</dd>` +
-      `<dt>Radius</dt><dd>${fmt(planet.radiusKm, 0)} km</dd>` +
-      `<dt>Moons shown</dt><dd>${planet.moons ? planet.moons.length : 0}</dd>`;
-  }
-  infoEl.style.display = "block";
+function updateSysLight() {
+  if (!sysLight.visible) return;
+  const p = focus.planet;
+  // light direction: from the Sun toward the focused planet
+  const dir = tmp.copy(p.body.abs).normalize();
+  const sysR = p.systemRadiusU * 1.1;
+  const D = Math.max(sysR * 5, p.radiusU * 20);
+  const focusScene = tmp2.copy(focus.abs).sub(focusCenter);
+  sysLight.position.copy(focusScene).addScaledVector(dir, -D);
+  sysLight.target.position.copy(focusScene);
+  // adaptive shadow frustum: tighter when zoomed in -> crisper eclipse shadows
+  const camDist = camera.position.distanceTo(controls.target);
+  const planetSpan = focus.kind === "moon"
+    ? focus.abs.distanceTo(p.body.abs) + p.body.effR * 1.2 : 0;
+  const half = Math.min(Math.max(camDist * 1.5, focus.effR * 4, planetSpan), sysR * 1.6);
+  const sc = sysLight.shadow.camera;
+  sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+  sc.near = Math.max(D - sysR * 2, 0.001); sc.far = D + sysR * 2;
+  sc.updateProjectionMatrix();
+  sysLight.shadow.normalBias = Math.max(focus.effR, p.body.effR) * 0.02;
 }
 
-/* --- scale bar --- */
-const sbBar = document.getElementById("scalebar-bar");
-const sbText = document.getElementById("scalebar-text");
-function updateScalebar() {
-  const targetPx = 90;
-  const au = targetPx / cam.scale;
-  const pow = Math.pow(10, Math.floor(Math.log10(au)));
-  let nice = pow;
-  for (const m of [5, 2, 1]) if (m * pow <= au) { nice = m * pow; break; }
-  sbBar.style.width = nice * cam.scale + "px";
-  sbText.textContent = nice >= 0.01
-    ? `${fmt(nice, 2)} AU`
-    : `${fmt(nice * AU_KM, 0)} km`;
-}
-
-/* --- rendering --- */
-const orbitCache = { T: null, paths: null };
-function getOrbits(T) {
-  // resample orbit shapes once per simulated week
-  if (orbitCache.T === null || Math.abs(T - orbitCache.T) > 7 / 36525) {
-    orbitCache.T = T;
-    orbitCache.paths = PLANETS.map(p => orbitPath(p, T));
-  }
-  return orbitCache.paths;
-}
-
-function draw(now) {
+function frame(now) {
+  requestAnimationFrame(frame);
   const dt = Math.min(now - lastFrame, 100);
   lastFrame = now;
   simTime += dt * speed;
 
   const T = julianCenturies(simTime);
   const d = daysSinceJ2000(simTime);
+  refreshOrbits(T);
+  updatePositions(T, d);
 
-  // positions
-  const pos = PLANETS.map(p => planetPosition(p, T));
+  focusCenter.copy(focus.abs);
 
-  // follow camera
-  if (cam.follow) {
-    const i = PLANETS.indexOf(cam.follow.planet);
-    if (i >= 0) {
-      let fx = pos[i].x, fy = pos[i].y;
-      if (cam.follow.moon) {
-        const o = moonOffset(cam.follow.moon, d);
-        fx += o.x; fy += o.y;
-      }
-      cam.x = fx; cam.y = fy;
-    } else { cam.x = 0; cam.y = 0; } // sun
+  // place everything relative to the focus (floating origin: keeps precision)
+  for (const b of bodies) {
+    b.mesh.position.copy(b.abs).sub(focusCenter);
+    if (b.orbitLine) b.orbitLine.position.copy(b.planet.body.abs).sub(focusCenter);
   }
+  sunBody.glow.position.copy(sunBody.mesh.position);
+  sunLight.position.copy(sunBody.mesh.position);
+  // keep the Sun visibly bright from any distance
+  const sunCamDist = sunBody.mesh.position.distanceTo(camera.position);
+  sunBody.glow.scale.setScalar(Math.max(sunBody.effR * 14, sunCamDist * 0.045));
+  for (const line of orbitLines) line.position.copy(focusCenter).negate();
 
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = "#04060d";
-  ctx.fillRect(0, 0, W, H);
+  updateSysLight();
+  controls.update();
+  updateLabels();
 
-  // stars
-  for (const s of stars) {
-    ctx.globalAlpha = s.a;
-    ctx.fillStyle = "#cdd8ff";
-    ctx.beginPath();
-    ctx.arc(s.x * W, s.y * H, s.r, 0, 7);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
+  // keep the info panel's live values (e.g. distance from Sun) fresh
+  if (infoEl.style.display === "block" && ++infoTick % 30 === 0) showInfo(focus);
 
-  drawnBodies = [];
-
-  // planet orbits
-  const paths = getOrbits(T);
-  ctx.lineWidth = 1;
-  for (let i = 0; i < PLANETS.length; i++) {
-    ctx.strokeStyle = PLANETS[i].dwarf ? "rgba(150,160,190,0.14)" : "rgba(150,160,190,0.25)";
-    ctx.beginPath();
-    for (let j = 0; j < paths[i].length; j++) {
-      const [sx, sy] = worldToScreen(paths[i][j].x, paths[i][j].y);
-      j === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-    }
-    ctx.stroke();
-  }
-
-  // sun
-  {
-    const [sx, sy] = worldToScreen(0, 0);
-    const rSun = Math.max(km(696000) * cam.scale, 6);
-    const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, rSun * 5);
-    glow.addColorStop(0, "rgba(255,220,130,0.9)");
-    glow.addColorStop(0.25, "rgba(255,180,80,0.25)");
-    glow.addColorStop(1, "rgba(255,180,80,0)");
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(sx, sy, rSun * 5, 0, 7); ctx.fill();
-    ctx.fillStyle = "#ffe9b0";
-    ctx.beginPath(); ctx.arc(sx, sy, rSun, 0, 7); ctx.fill();
-    drawnBodies.push({ sx, sy, r: rSun, planet: null });
-  }
-
-  // planets + moons
-  ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
-  for (let i = 0; i < PLANETS.length; i++) {
-    const p = PLANETS[i];
-    const [sx, sy] = worldToScreen(pos[i].x, pos[i].y);
-    if (sx < -200 || sx > W + 200 || sy < -200 || sy > H + 200) continue;
-
-    const trueR = km(p.radiusKm) * cam.scale;
-    const r = Math.max(trueR, 3.5);
-
-    // Saturn's rings
-    if (p.ring && trueR > 2) {
-      ctx.strokeStyle = "rgba(227,211,163,0.5)";
-      ctx.lineWidth = trueR * (p.ring.outer - p.ring.inner);
-      ctx.beginPath();
-      ctx.arc(sx, sy, trueR * (p.ring.inner + p.ring.outer) / 2, 0, 7);
-      ctx.stroke();
-      ctx.lineWidth = 1;
-    }
-
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill();
-    drawnBodies.push({ sx, sy, r, planet: p });
-
-    // label
-    ctx.fillStyle = "rgba(201,212,240,0.85)";
-    ctx.fillText(p.name, sx + r + 5, sy + 4);
-
-    // moons — draw when their orbits would be visibly separate
-    if (p.moons) {
-      for (const m of p.moons) {
-        const orbPx = m.a * cam.scale;
-        if (orbPx < 10) continue;
-        // moon orbit circle
-        ctx.strokeStyle = "rgba(150,160,190,0.18)";
-        ctx.beginPath(); ctx.arc(sx, sy, orbPx, 0, 7); ctx.stroke();
-        const o = moonOffset(m, d);
-        const [mx, my] = worldToScreen(pos[i].x + o.x, pos[i].y + o.y);
-        const mr = Math.max(km(m.radiusKm) * cam.scale, 2);
-        ctx.fillStyle = "#aab4cc";
-        ctx.beginPath(); ctx.arc(mx, my, mr, 0, 7); ctx.fill();
-        drawnBodies.push({ sx: mx, sy: my, r: mr, planet: p, moon: m });
-        if (orbPx > 28) {
-          ctx.fillStyle = "rgba(170,180,204,0.7)";
-          ctx.fillText(m.name, mx + mr + 4, my + 3);
-        }
-      }
-    }
-  }
-
-  // clock
+  // HUD
   const dte = new Date(simTime);
   clockText.textContent = dte.toLocaleString(undefined, {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
+  const camDist = camera.position.distanceTo(controls.target);
+  const au = camDist / AU_U;
+  roFocus.textContent = "viewing " + focus.name;
+  roDist.textContent = au >= 0.02
+    ? `${fmt(au, 2)} AU away`
+    : `${fmt(camDist * UNIT_KM, 0)} km away`;
 
-  updateScalebar();
-  requestAnimationFrame(draw);
+  renderer.render(scene, camera);
 }
-requestAnimationFrame(draw);
+
+applySizes();
+applyLayers();
+refreshOrbits(julianCenturies(simTime));
+requestAnimationFrame(frame);
+
+// debugging hooks
+window.SG = { bodies, PLANETS, focusOn, camera, controls,
+  get focus() { return focus; },
+  set simTime(v) { simTime = v; }, get simTime() { return simTime; },
+  setSpeed(v) { speed = v; } };
 </script>
 </body>
 </html>

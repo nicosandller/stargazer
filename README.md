@@ -1,19 +1,21 @@
 # Stargazer
 
-An explorable, real-time model of the solar system in a single HTML page — no build step, no dependencies.
+An explorable, real-time **3D** model of the solar system in a single HTML page (Three.js loaded from CDN — no build step).
 
-Planets are placed using JPL's approximate Keplerian elements (valid 1800–2050 AD), computed for the visitor's current clock time. Major moons of each planet are shown with mean circular orbits (visualization-grade accuracy).
+Everything is at **true scale**: real planet/moon sizes, real distances. Planets are placed using JPL's approximate Keplerian elements (valid 1800–2050 AD) in full 3D — including orbital inclination — computed for the visitor's current clock time. Moons use mean circular orbits in their planet's equatorial plane (visualization-grade).
+
+Lighting is physical: a point light at the Sun gives every body its correct day/night terminator, and a focused shadow camera renders true cast shadows in whichever planet system you visit — Saturn's shadow on its rings, moon eclipse shadows on Jupiter.
 
 ## Controls
 
-- **Drag** to pan, **scroll / pinch** to zoom
-- **Click** a body to follow it and see details
+- **Drag** to orbit the view, **scroll / pinch** to zoom, **right-drag** to pan
+- **Click** a body (or its name) to fly there and see details
 - Time-warp buttons speed up, reverse, or pause time; **Now** snaps back to the present
-- Zoom into a planet to reveal its moons
+- `size` buttons can exaggerate body sizes ×10 / ×100 for easier sightseeing (distances stay real)
 
 ## Run locally
 
-Just open `index.html`, or serve it:
+Serve it (ES modules need http):
 
 ```sh
 python3 -m http.server 4173
