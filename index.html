@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Stargazer — Live Solar System</title>
+<meta name="description" content="An explorable, real-time model of the solar system. Planet and moon positions are computed for your current time.">
+<style>
+  :root {
+    --ui-bg: rgba(10, 14, 26, 0.78);
+    --ui-border: rgba(120, 150, 255, 0.18);
+    --ui-text: #c9d4f0;
+    --accent: #6ea8ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #04060d; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ui-text); }
+  #space { display: block; width: 100vw; height: 100vh; cursor: grab; touch-action: none; }
+  #space.dragging { cursor: grabbing; }
+
+  .panel {
+    position: fixed;
+    background: var(--ui-bg);
+    border: 1px solid var(--ui-border);
+    border-radius: 12px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 10px 14px;
+    user-select: none;
+  }
+  #hud-top {
+    top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap; justify-content: center;
+    max-width: calc(100vw - 24px);
+  }
+  #clock { font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+  #clock .live-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #4ade80; margin-right: 6px; vertical-align: 1px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  #clock.warped .live-dot { background: #fbbf24; animation: none; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  .btn {
+    background: rgba(110, 168, 255, 0.12);
+    border: 1px solid var(--ui-border);
+    color: var(--ui-text);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { background: rgba(110, 168, 255, 0.25); }
+  .btn.active { background: var(--accent); color: #04060d; border-color: var(--accent); }
+  #speed-group { display: flex; gap: 4px; }
+
+  #info {
+    bottom: 12px; left: 12px;
+    max-width: 290px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    display: none;
+  }
+  #info h2 { font-size: 16px; margin-bottom: 4px; color: #fff; font-weight: 600; }
+  #info .close { position: absolute; top: 6px; right: 10px; cursor: pointer; opacity: 0.6; font-size: 14px; }
+  #info .close:hover { opacity: 1; }
+  #info dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin-top: 6px; }
+  #info dt { opacity: 0.55; }
+  #info dd { font-variant-numeric: tabular-nums; }
+
+  #hint {
+    bottom: 12px; right: 12px;
+    font-size: 11.5px;
+    opacity: 0.75;
+    text-align: right;
+    line-height: 1.6;
+    pointer-events: none;
+  }
+  #scalebar {
+    top: 64px; right: 12px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    padding: 6px 12px;
+  }
+  #scalebar .bar { height: 2px; background: var(--ui-text); margin-bottom: 4px; border-radius: 1px; }
+  @media (max-width: 640px) {
+    #hint { display: none; }
+    #scalebar { top: auto; bottom: 12px; }
+    #info { max-width: calc(100vw - 24px); bottom: 64px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="space"></canvas>
+
+<div id="hud-top" class="panel">
+  <span id="clock"><span class="live-dot"></span><span id="clock-text"></span></span>
+  <span id="speed-group">
+    <button class="btn" data-speed="-86400">−1d/s</button>
+    <button class="btn" data-speed="0">⏸</button>
+    <button class="btn active" data-speed="1">Live</button>
+    <button class="btn" data-speed="86400">+1d/s</button>
+    <button class="btn" data-speed="2592000">+30d/s</button>
+  </span>
+  <button class="btn" id="btn-now">Now</button>
+</div>
+
+<div id="scalebar" class="panel">
+  <div class="bar" id="scalebar-bar"></div>
+  <span id="scalebar-text"></span>
+</div>
+
+<div id="info" class="panel">
+  <span class="close" id="info-close">✕</span>
+  <h2 id="info-name"></h2>
+  <div id="info-blurb"></div>
+  <dl id="info-stats"></dl>
+</div>
+
+<div id="hint" class="panel">
+  drag to pan · scroll / pinch to zoom<br>
+  click a body to follow it · zoom in to see moons
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Stargazer — real-time explorable solar system
+   Planet positions: JPL approximate Keplerian elements (J2000
+   ecliptic, valid 1800–2050 AD), projected onto the ecliptic
+   plane. Moon positions use mean circular orbits — good for
+   visualization, not for navigation.
+   ============================================================ */
+
+const AU_KM = 149597870.7;
+const DEG = Math.PI / 180;
+const km = v => v / AU_KM;
+
+/* --- JPL approximate elements: [a, e, I, L, longPeri, longNode] + rates/century --- */
+const PLANETS = [
+  { name: "Mercury", color: "#b5a698", radiusKm: 2440,
+    el: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],
+    rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
+    blurb: "Smallest planet, closest to the Sun. A year here lasts 88 Earth days." },
+  { name: "Venus", color: "#e8c98a", radiusKm: 6052,
+    el: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255],
+    rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418],
+    blurb: "Hottest planet, wrapped in crushing CO₂ clouds. Spins backwards, slowly." },
+  { name: "Earth", color: "#5b9bd5", radiusKm: 6371,
+    el: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0],
+    rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
+    blurb: "Home. The only known world with liquid-water oceans and life.",
+    moons: [
+      { name: "Moon", aKm: 384400, phase: 218.316, rate: 13.176396, radiusKm: 1737 },
+    ] },
+  { name: "Mars", color: "#d1684a", radiusKm: 3390,
+    el: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891],
+    rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343],
+    blurb: "The red planet — rusty deserts, the solar system's tallest volcano, and two tiny captured moons.",
+    moons: [
+      { name: "Phobos", aKm: 9376, period: 0.3189, radiusKm: 11 },
+      { name: "Deimos", aKm: 23463, period: 1.2624, radiusKm: 6 },
+    ] },
+  { name: "Jupiter", color: "#d9b38c", radiusKm: 69911,
+    el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
+    rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
+    blurb: "The giant — more massive than all other planets combined, with 90+ known moons.",
+    moons: [
+      { name: "Io",       aKm: 421700,  phase: 106.077, rate: 203.488956, radiusKm: 1822 },
+      { name: "Europa",   aKm: 671034,  phase: 175.732, rate: 101.374725, radiusKm: 1561 },
+      { name: "Ganymede", aKm: 1070412, phase: 120.559, rate: 50.317609,  radiusKm: 2634 },
+      { name: "Callisto", aKm: 1882709, phase: 84.445,  rate: 21.571071,  radiusKm: 2410 },
+    ] },
+  { name: "Saturn", color: "#e3d3a3", radiusKm: 58232, ring: { inner: 1.24, outer: 2.27 },
+    el: [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448],
+    rate: [-0.00125060, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794],
+    blurb: "Famous for its rings — billions of ice fragments in orbit. Titan, its largest moon, has lakes of methane.",
+    moons: [
+      { name: "Mimas",     aKm: 185539,  period: 0.942,  radiusKm: 198 },
+      { name: "Enceladus", aKm: 237948,  period: 1.370,  radiusKm: 252 },
+      { name: "Tethys",    aKm: 294619,  period: 1.888,  radiusKm: 531 },
+      { name: "Dione",     aKm: 377396,  period: 2.737,  radiusKm: 561 },
+      { name: "Rhea",      aKm: 527108,  period: 4.518,  radiusKm: 764 },
+      { name: "Titan",     aKm: 1221870, period: 15.945, radiusKm: 2575 },
+      { name: "Iapetus",   aKm: 3560820, period: 79.322, radiusKm: 735 },
+    ] },
+  { name: "Uranus", color: "#9fd8d8", radiusKm: 25362,
+    el: [19.18916464, 0.04725744, 0.77263783, 313.23810451, 170.95427630, 74.01692503],
+    rate: [-0.00196176, -0.00004397, -0.00242939, 428.48202785, 0.40805281, 0.04240589],
+    blurb: "An ice giant tipped on its side — it rolls around the Sun at a 98° tilt.",
+    moons: [
+      { name: "Miranda", aKm: 129390, period: 1.413,  radiusKm: 236 },
+      { name: "Ariel",   aKm: 191020, period: 2.520,  radiusKm: 579 },
+      { name: "Umbriel", aKm: 266000, period: 4.144,  radiusKm: 585 },
+      { name: "Titania", aKm: 435910, period: 8.706,  radiusKm: 789 },
+      { name: "Oberon",  aKm: 583520, period: 13.46,  radiusKm: 761 },
+    ] },
+  { name: "Neptune", color: "#5c7fe8", radiusKm: 24622,
+    el: [30.06992276, 0.00859048, 1.77004347, -55.12002969, 44.96476227, 131.78422574],
+    rate: [0.00026291, 0.00005105, 0.00035372, 218.45945325, -0.32241464, -0.00508664],
+    blurb: "The windiest world — supersonic storms. Its moon Triton orbits backwards.",
+    moons: [
+      { name: "Triton", aKm: 354759, period: -5.877, radiusKm: 1353 },
+    ] },
+  { name: "Pluto", color: "#c8b6a6", radiusKm: 1188, dwarf: true,
+    el: [39.48211675, 0.24882730, 17.14001206, 238.92903833, 224.06891629, 110.30393684],
+    rate: [-0.00031596, 0.00005170, 0.00004818, 145.20780515, -0.04062942, -0.01183482],
+    blurb: "Dwarf planet in the Kuiper belt. Its orbit is so eccentric it sometimes comes closer than Neptune.",
+    moons: [
+      { name: "Charon", aKm: 19591, period: 6.387, radiusKm: 606 },
+    ] },
+];
+
+// normalize moon data: derive rate from period when not given, convert a to AU
+for (const p of PLANETS) {
+  if (!p.moons) continue;
+  for (const m of p.moons) {
+    m.a = km(m.aKm);
+    if (m.rate === undefined) m.rate = 360 / m.period;
+    if (m.phase === undefined) m.phase = (m.aKm * 7.3) % 360; // arbitrary fixed epoch phase
+    if (m.period === undefined) m.period = 360 / m.rate;
+  }
+}
+
+/* --- orbital mechanics --- */
+function julianCenturies(msUTC) {
+  return (msUTC / 86400000 + 2440587.5 - 2451545.0) / 36525;
+}
+function daysSinceJ2000(msUTC) {
+  return msUTC / 86400000 + 2440587.5 - 2451545.0;
+}
+function solveKepler(M, e) {
+  // M in radians; Newton's method
+  let E = M + e * Math.sin(M);
+  for (let i = 0; i < 8; i++) {
+    const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= dE;
+    if (Math.abs(dE) < 1e-9) break;
+  }
+  return E;
+}
+// heliocentric ecliptic position {x, y} in AU (z dropped — top-down view)
+function planetPosition(p, T) {
+  const a  = p.el[0] + p.rate[0] * T;
+  const e  = p.el[1] + p.rate[1] * T;
+  const I  = (p.el[2] + p.rate[2] * T) * DEG;
+  const L  = (p.el[3] + p.rate[3] * T) * DEG;
+  const lp = (p.el[4] + p.rate[4] * T) * DEG;
+  const ln = (p.el[5] + p.rate[5] * T) * DEG;
+  const w = lp - ln;             // argument of perihelion
+  const M = ((L - lp) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+  const E = solveKepler(M, e);
+  const xp = a * (Math.cos(E) - e);
+  const yp = a * Math.sqrt(1 - e * e) * Math.sin(E);
+  const cw = Math.cos(w), sw = Math.sin(w);
+  const cn = Math.cos(ln), sn = Math.sin(ln);
+  const ci = Math.cos(I);
+  return {
+    x: (cw * cn - sw * sn * ci) * xp + (-sw * cn - cw * sn * ci) * yp,
+    y: (cw * sn + sw * cn * ci) * xp + (-sw * sn + cw * cn * ci) * yp,
+    r: Math.sqrt(xp * xp + yp * yp),
+  };
+}
+function moonOffset(m, d) {
+  const ang = (m.phase + m.rate * d) * DEG;
+  return { x: m.a * Math.cos(ang), y: m.a * Math.sin(ang) };
+}
+
+/* --- precomputed orbit paths (slow-varying; sampled at current epoch) --- */
+function orbitPath(p, T, n = 240) {
+  const pts = [];
+  const saved = p.el[3];
+  for (let i = 0; i <= n; i++) {
+    // sweep mean longitude through a full revolution
+    p.el[3] = saved;
+    const fake = { el: p.el.slice(), rate: p.rate };
+    fake.el[3] = (i / n) * 360 + p.el[4]; // relative to perihelion for even sampling
+    fake.el[3] -= p.rate[3] * T;          // cancel time advance so L is what we set
+    pts.push(planetPosition(fake, T));
+  }
+  p.el[3] = saved;
+  return pts;
+}
+
+/* --- canvas & camera --- */
+const canvas = document.getElementById("space");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+}
+window.addEventListener("resize", resize);
+resize();
+
+const cam = {
+  x: 0, y: 0,                       // world coords (AU) at screen center
+  scale: Math.min(W, H) / 24,       // px per AU — start with Saturn's orbit in view
+  follow: null,                     // planet (or {planet, moon}) being followed
+};
+function worldToScreen(wx, wy) {
+  return [ (wx - cam.x) * cam.scale + W / 2,
+           (cam.y - wy) * cam.scale + H / 2 ]; // y up
+}
+function screenToWorld(sx, sy) {
+  return [ (sx - W / 2) / cam.scale + cam.x,
+           cam.y - (sy - H / 2) / cam.scale ];
+}
+
+/* --- starfield (fixed, regenerated on resize bucket) --- */
+let stars = [];
+function makeStars() {
+  stars = [];
+  const n = Math.floor(W * H / 3500);
+  for (let i = 0; i < n; i++) {
+    stars.push({ x: Math.random(), y: Math.random(),
+                 r: Math.random() * 1.1 + 0.2, a: Math.random() * 0.6 + 0.15 });
+  }
+}
+makeStars();
+window.addEventListener("resize", makeStars);
+
+/* --- simulation time --- */
+let simTime = Date.now();   // ms UTC
+let speed = 1;              // sim-seconds per real second
+let lastFrame = performance.now();
+
+const clockText = document.getElementById("clock-text");
+const clockEl = document.getElementById("clock");
+document.querySelectorAll("#speed-group .btn").forEach(b => {
+  b.addEventListener("click", () => {
+    speed = Number(b.dataset.speed);
+    document.querySelectorAll("#speed-group .btn").forEach(x => x.classList.toggle("active", x === b));
+    clockEl.classList.toggle("warped", speed !== 1);
+  });
+});
+document.getElementById("btn-now").addEventListener("click", () => {
+  simTime = Date.now();
+});
+
+/* --- interaction: pan / zoom / pick --- */
+let dragging = false, dragMoved = false, lastPointer = null;
+const pointers = new Map();
+let pinchDist = 0;
+
+canvas.addEventListener("pointerdown", e => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 1) {
+    dragging = true; dragMoved = false;
+    lastPointer = [e.clientX, e.clientY];
+    canvas.classList.add("dragging");
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+  }
+});
+canvas.addEventListener("pointermove", e => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (pinchDist > 0) zoomAt((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, d / pinchDist);
+    pinchDist = d;
+    dragMoved = true;
+  } else if (dragging) {
+    const dx = e.clientX - lastPointer[0], dy = e.clientY - lastPointer[1];
+    if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
+    if (dragMoved) {
+      cam.follow = null;
+      cam.x -= dx / cam.scale;
+      cam.y += dy / cam.scale;
+    }
+    lastPointer = [e.clientX, e.clientY];
+  }
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchDist = 0;
+  if (pointers.size === 0) {
+    canvas.classList.remove("dragging");
+    if (dragging && !dragMoved) pick(e.clientX, e.clientY);
+    dragging = false;
+  }
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+function zoomAt(sx, sy, factor) {
+  const [wx, wy] = screenToWorld(sx, sy);
+  cam.scale = Math.max(2, Math.min(cam.scale * factor, 5e9));
+  if (!cam.follow) {
+    const [wx2, wy2] = screenToWorld(sx, sy);
+    cam.x += wx - wx2;
+    cam.y += wy - wy2;
+  }
+}
+
+/* --- picking & info panel --- */
+const infoEl = document.getElementById("info");
+document.getElementById("info-close").addEventListener("click", () => {
+  infoEl.style.display = "none";
+  cam.follow = null;
+});
+let drawnBodies = []; // {sx, sy, r, planet, moon?} filled each frame
+
+function pick(sx, sy) {
+  let best = null, bestD = 28; // px hit radius
+  for (const b of drawnBodies) {
+    const d = Math.hypot(b.sx - sx, b.sy - sy) - b.r;
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  if (best) {
+    cam.follow = best;
+    showInfo(best);
+    // zoom in a bit if very far out relative to the body
+    if (best.moon && cam.scale < 2000) cam.scale = 40000;
+  } else {
+    infoEl.style.display = "none";
+    cam.follow = null;
+  }
+}
+
+function fmt(n, digits = 3) {
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+function showInfo(b) {
+  const planet = b.planet, moon = b.moon;
+  document.getElementById("info-name").textContent = moon ? moon.name : (planet ? planet.name : "Sun");
+  const stats = document.getElementById("info-stats");
+  const blurb = document.getElementById("info-blurb");
+  if (!planet) {
+    blurb.textContent = "Our star. 99.86% of the solar system's mass.";
+    stats.innerHTML = "<dt>Radius</dt><dd>696,000 km</dd>";
+  } else if (moon) {
+    blurb.textContent = `Moon of ${planet.name}.`;
+    stats.innerHTML =
+      `<dt>Orbit radius</dt><dd>${fmt(moon.aKm, 0)} km</dd>` +
+      `<dt>Orbital period</dt><dd>${fmt(Math.abs(moon.period), 2)} days${moon.period < 0 ? " (retrograde)" : ""}</dd>` +
+      `<dt>Radius</dt><dd>${fmt(moon.radiusKm, 0)} km</dd>`;
+  } else {
+    blurb.textContent = planet.blurb || "";
+    const T = julianCenturies(simTime);
+    const pos = planetPosition(planet, T);
+    stats.innerHTML =
+      `<dt>Distance from Sun</dt><dd>${fmt(pos.r)} AU</dd>` +
+      `<dt>Radius</dt><dd>${fmt(planet.radiusKm, 0)} km</dd>` +
+      `<dt>Moons shown</dt><dd>${planet.moons ? planet.moons.length : 0}</dd>`;
+  }
+  infoEl.style.display = "block";
+}
+
+/* --- scale bar --- */
+const sbBar = document.getElementById("scalebar-bar");
+const sbText = document.getElementById("scalebar-text");
+function updateScalebar() {
+  const targetPx = 90;
+  const au = targetPx / cam.scale;
+  const pow = Math.pow(10, Math.floor(Math.log10(au)));
+  let nice = pow;
+  for (const m of [5, 2, 1]) if (m * pow <= au) { nice = m * pow; break; }
+  sbBar.style.width = nice * cam.scale + "px";
+  sbText.textContent = nice >= 0.01
+    ? `${fmt(nice, 2)} AU`
+    : `${fmt(nice * AU_KM, 0)} km`;
+}
+
+/* --- rendering --- */
+const orbitCache = { T: null, paths: null };
+function getOrbits(T) {
+  // resample orbit shapes once per simulated week
+  if (orbitCache.T === null || Math.abs(T - orbitCache.T) > 7 / 36525) {
+    orbitCache.T = T;
+    orbitCache.paths = PLANETS.map(p => orbitPath(p, T));
+  }
+  return orbitCache.paths;
+}
+
+function draw(now) {
+  const dt = Math.min(now - lastFrame, 100);
+  lastFrame = now;
+  simTime += dt * speed;
+
+  const T = julianCenturies(simTime);
+  const d = daysSinceJ2000(simTime);
+
+  // positions
+  const pos = PLANETS.map(p => planetPosition(p, T));
+
+  // follow camera
+  if (cam.follow) {
+    const i = PLANETS.indexOf(cam.follow.planet);
+    if (i >= 0) {
+      let fx = pos[i].x, fy = pos[i].y;
+      if (cam.follow.moon) {
+        const o = moonOffset(cam.follow.moon, d);
+        fx += o.x; fy += o.y;
+      }
+      cam.x = fx; cam.y = fy;
+    } else { cam.x = 0; cam.y = 0; } // sun
+  }
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#04060d";
+  ctx.fillRect(0, 0, W, H);
+
+  // stars
+  for (const s of stars) {
+    ctx.globalAlpha = s.a;
+    ctx.fillStyle = "#cdd8ff";
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, 7);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  drawnBodies = [];
+
+  // planet orbits
+  const paths = getOrbits(T);
+  ctx.lineWidth = 1;
+  for (let i = 0; i < PLANETS.length; i++) {
+    ctx.strokeStyle = PLANETS[i].dwarf ? "rgba(150,160,190,0.14)" : "rgba(150,160,190,0.25)";
+    ctx.beginPath();
+    for (let j = 0; j < paths[i].length; j++) {
+      const [sx, sy] = worldToScreen(paths[i][j].x, paths[i][j].y);
+      j === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+  }
+
+  // sun
+  {
+    const [sx, sy] = worldToScreen(0, 0);
+    const rSun = Math.max(km(696000) * cam.scale, 6);
+    const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, rSun * 5);
+    glow.addColorStop(0, "rgba(255,220,130,0.9)");
+    glow.addColorStop(0.25, "rgba(255,180,80,0.25)");
+    glow.addColorStop(1, "rgba(255,180,80,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(sx, sy, rSun * 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#ffe9b0";
+    ctx.beginPath(); ctx.arc(sx, sy, rSun, 0, 7); ctx.fill();
+    drawnBodies.push({ sx, sy, r: rSun, planet: null });
+  }
+
+  // planets + moons
+  ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+  for (let i = 0; i < PLANETS.length; i++) {
+    const p = PLANETS[i];
+    const [sx, sy] = worldToScreen(pos[i].x, pos[i].y);
+    if (sx < -200 || sx > W + 200 || sy < -200 || sy > H + 200) continue;
+
+    const trueR = km(p.radiusKm) * cam.scale;
+    const r = Math.max(trueR, 3.5);
+
+    // Saturn's rings
+    if (p.ring && trueR > 2) {
+      ctx.strokeStyle = "rgba(227,211,163,0.5)";
+      ctx.lineWidth = trueR * (p.ring.outer - p.ring.inner);
+      ctx.beginPath();
+      ctx.arc(sx, sy, trueR * (p.ring.inner + p.ring.outer) / 2, 0, 7);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill();
+    drawnBodies.push({ sx, sy, r, planet: p });
+
+    // label
+    ctx.fillStyle = "rgba(201,212,240,0.85)";
+    ctx.fillText(p.name, sx + r + 5, sy + 4);
+
+    // moons — draw when their orbits would be visibly separate
+    if (p.moons) {
+      for (const m of p.moons) {
+        const orbPx = m.a * cam.scale;
+        if (orbPx < 10) continue;
+        // moon orbit circle
+        ctx.strokeStyle = "rgba(150,160,190,0.18)";
+        ctx.beginPath(); ctx.arc(sx, sy, orbPx, 0, 7); ctx.stroke();
+        const o = moonOffset(m, d);
+        const [mx, my] = worldToScreen(pos[i].x + o.x, pos[i].y + o.y);
+        const mr = Math.max(km(m.radiusKm) * cam.scale, 2);
+        ctx.fillStyle = "#aab4cc";
+        ctx.beginPath(); ctx.arc(mx, my, mr, 0, 7); ctx.fill();
+        drawnBodies.push({ sx: mx, sy: my, r: mr, planet: p, moon: m });
+        if (orbPx > 28) {
+          ctx.fillStyle = "rgba(170,180,204,0.7)";
+          ctx.fillText(m.name, mx + mr + 4, my + 3);
+        }
+      }
+    }
+  }
+
+  // clock
+  const dte = new Date(simTime);
+  clockText.textContent = dte.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+
+  updateScalebar();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
