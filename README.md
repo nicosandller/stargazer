@@ -6,7 +6,7 @@ Everything is at **true scale**: real planet/moon sizes, real distances. Planets
 
 Lighting is physical: a point light at the Sun gives every body its correct day/night terminator, and a focused shadow camera renders true cast shadows in whichever planet system you visit — Saturn's shadow on its rings, moon eclipse shadows on Jupiter.
 
-Beyond the planets and their moons it includes Ceres, Pluto, Eris, and Halley's Comet (all on real Keplerian orbits), plus the asteroid belt, the Kuiper belt, and the inner Oort cloud as particle fields. Earth gets a procedurally generated surface — continents, polar ice, and a slowly drifting cloud layer.
+Beyond the planets and their moons it includes Ceres, Pluto, Eris, and Halley's Comet (all on real Keplerian orbits), plus the asteroid belt, the Kuiper belt, and the inner Oort cloud as particle fields. Earth uses NASA Blue Marble imagery (via the three.js repo) with a real cloud layer, and rotates in real time: its orientation is computed from the Earth Rotation Angle (IAU 2000) about its true 23.44°-tilted axis, so the hemisphere facing the Sun is correct for the simulated moment.
 
 ## Controls
 
