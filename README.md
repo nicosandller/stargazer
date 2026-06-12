@@ -12,6 +12,10 @@ Lighting is physical: a point light at the Sun gives every body its correct day/
 
 Beyond the planets and their moons it includes Ceres, Pluto, Eris, and Halley's Comet (all on real Keplerian orbits), plus the asteroid belt, the Kuiper belt, and the inner Oort cloud as particle fields. Earth uses NASA Blue Marble imagery (via the three.js repo) with a real cloud layer, and rotates in real time: its orientation is computed from the Earth Rotation Angle (IAU 2000) about its true 23.44°-tilted axis, so the hemisphere facing the Sun is correct for the simulated moment.
 
+## Rocket launch simulation
+
+The 🚀 panel (top right) flies missions from any launch site: set launch time, pad latitude/longitude, azimuth, parking-orbit altitude, and duration. The ascent climbs into a parking orbit, then the trajectory is integrated numerically (RK4) under Earth + Moon + Sun gravity. With **Fly to the Moon** enabled, the translunar injection burn is auto-targeted — burn timing from the parking-orbit geometry, ΔV from the transfer ellipse — and the panel reports the computed burn and closest lunar approach. **Load Artemis II** fills in the real mission: night launch from Kennedy LC-39B into a free-return trip around the Moon (the computed TLI ΔV of ~3.1 km/s matches the real mission). A small SLS-style rocket follows the path; click it for live altitude, speed, and Moon distance. Visualization-grade physics, not mission-grade.
+
 ## Controls
 
 A sidebar lists every major body and region — click to fly there.

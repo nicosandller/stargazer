@@ -87,6 +87,32 @@
   #info dt { opacity: 0.55; }
   #info dd { font-variant-numeric: tabular-nums; }
 
+  #launch {
+    top: 124px; right: 12px;
+    width: 256px;
+    font-size: 12px;
+    max-height: calc(100vh - 150px);
+    overflow-y: auto;
+  }
+  #launch summary { cursor: pointer; font-weight: 600; user-select: none; }
+  #launch .lbody { margin-top: 8px; }
+  #launch .lrow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin: 4px 0;
+  }
+  #launch .lrow label { opacity: 0.7; white-space: nowrap; }
+  #launch input {
+    background: rgba(110, 168, 255, 0.08);
+    border: 1px solid var(--ui-border);
+    color: var(--ui-text);
+    border-radius: 6px;
+    padding: 2px 6px;
+    width: 132px;
+    font-size: 11.5px;
+  }
+  #launch input[type="checkbox"] { width: auto; }
+  #launch .lbtns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  #l-status { margin-top: 8px; font-size: 11px; line-height: 1.5; opacity: 0.85; }
   #sidebar {
     left: 12px; top: 50%; transform: translateY(-50%);
     display: flex; flex-direction: column; gap: 2px;
@@ -136,6 +162,7 @@
     }
     #readout { top: auto; bottom: 70px; }
     #info { max-width: calc(100vw - 24px); bottom: 70px; }
+    #launch { top: 110px; width: 230px; max-height: 50vh; }
   }
 </style>
 <script type="importmap">
@@ -156,6 +183,8 @@
     <button class="btn" data-speed="-86400">−1d/s</button>
     <button class="btn" data-speed="0">⏸</button>
     <button class="btn active" data-speed="1">Live</button>
+    <button class="btn" data-speed="60">+1m/s</button>
+    <button class="btn" data-speed="3600">+1h/s</button>
     <button class="btn" data-speed="86400">+1d/s</button>
     <button class="btn" data-speed="2592000">+30d/s</button>
   </span>
@@ -169,6 +198,26 @@
 </div>
 
 <div id="sidebar" class="panel"></div>
+
+<details id="launch" class="panel">
+  <summary>🚀 Launch simulation</summary>
+  <div class="lbody">
+    <div class="lrow"><label>Launch time</label><input id="l-date" type="datetime-local"></div>
+    <div class="lrow"><label>Latitude °</label><input id="l-lat" type="number" step="0.001" value="28.573"></div>
+    <div class="lrow"><label>Longitude °</label><input id="l-lon" type="number" step="0.001" value="-80.649"></div>
+    <div class="lrow"><label>Azimuth °</label><input id="l-az" type="number" step="1" value="90"></div>
+    <div class="lrow"><label>Parking alt. km</label><input id="l-alt" type="number" step="5" value="185"></div>
+    <div class="lrow"><label>Ascent time s</label><input id="l-asc" type="number" step="10" value="510"></div>
+    <div class="lrow"><label>Fly to the Moon (TLI)</label><input id="l-tli" type="checkbox" checked></div>
+    <div class="lrow"><label>Duration days</label><input id="l-days" type="number" step="1" value="10"></div>
+    <div class="lbtns">
+      <button class="btn" id="l-artemis">Load Artemis II</button>
+      <button class="btn" id="l-launch">Launch</button>
+      <button class="btn" id="l-clear">Clear</button>
+    </div>
+    <div id="l-status"></div>
+  </div>
+</details>
 
 <div id="readout" class="panel">
   <div id="readout-focus"></div>
@@ -622,6 +671,46 @@ for (const p of PLANETS) {
   }
 }
 
+/* --- rocket: SLS-style model built from primitives --- */
+function buildRocketMesh() {
+  const g = new THREE.Group();
+  // slight emissive so the vehicle stays readable on Earth's night side
+  const white = new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.7,
+    emissive: 0x3a3d44 });
+  const orange = new THREE.MeshStandardMaterial({ color: 0xd97a3c, roughness: 0.8,
+    emissive: 0x4a2510 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x444a55, roughness: 0.6,
+    emissive: 0x15171c });
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.5, 20), orange);
+  core.position.y = 0.25; g.add(core);
+  const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.045, 0.16, 20), white);
+  upper.position.y = 0.58; g.add(upper);
+  const capsule = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.1, 20), dark);
+  capsule.position.y = 0.71; g.add(capsule);
+  for (const s of [-1, 1]) {
+    const booster = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.36, 14), white);
+    booster.position.set(s * 0.063, 0.18, 0); g.add(booster);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.05, 14), white);
+    tip.position.set(s * 0.063, 0.385, 0); g.add(tip);
+  }
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.04, 0.28, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffb24d, transparent: true, opacity: 0.85 }));
+  flame.position.y = -0.14; flame.rotation.x = Math.PI;
+  g.add(flame);
+  g.userData.flame = flame;
+  return g;
+}
+const rocketBody = {
+  name: "Rocket", kind: "rocket", planet: null,
+  abs: new THREE.Vector3(), radiusU: kmU(0.1), effR: kmU(0.1), hidden: true,
+  mesh: buildRocketMesh(),
+};
+rocketBody.mesh.visible = false;
+scene.add(rocketBody.mesh);
+rocketBody.label = makeLabel("Rocket", "", () => focusOn(rocketBody));
+bodies.push(rocketBody);
+
 /* --- planet orbit lines ---
    Resampled every frame with vertices clustered around the planet's
    current position (one vertex lands exactly on the planet), so the
@@ -667,11 +756,12 @@ function effRadius(b) {
 }
 function applySizes() {
   for (const b of bodies) {
+    if (b.kind === "rocket") continue;   // scaled adaptively each frame
     b.effR = effRadius(b);
     b.mesh.scale.setScalar(b.effR);
   }
   sunBody.glow.scale.setScalar(sunBody.effR * 14);
-  controls.minDistance = (focus.effR || focus.radiusU) * 2.5;
+  if (focus.kind !== "rocket") controls.minDistance = (focus.effR || focus.radiusU) * 2.5;
 }
 document.querySelectorAll("#size-group .btn").forEach(b => {
   b.addEventListener("click", () => {
@@ -692,6 +782,7 @@ function focusOn(b, keepDistance = false) {
   if (!keepDistance) {
     let dist;
     if (b.kind === "sun") dist = 2600;
+    else if (b.kind === "rocket") dist = kmU(1200);
     else if (b.kind === "moon") dist = b.effR * 12;
     else dist = b.planet.moons ? b.planet.systemRadiusU * 2.6 : b.effR * 18;
     const dir = camera.position.clone().sub(controls.target).normalize();
@@ -700,7 +791,7 @@ function focusOn(b, keepDistance = false) {
     camera.position.sub(b.abs).add(prev.abs);
   }
   controls.target.set(0, 0, 0);
-  controls.minDistance = b.effR * 2.5;
+  controls.minDistance = b.kind === "rocket" ? kmU(0.05) : b.effR * 2.5;
   applyLayers();
   infoIsCustom = false;
   showInfo(b);
@@ -726,6 +817,7 @@ document.getElementById("info-close").addEventListener("click", () => {
 function fmt(n, digits = 3) {
   return n.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
+const infoV1 = new THREE.Vector3(), infoV2 = new THREE.Vector3();
 function showInfo(b) {
   document.getElementById("info-name").textContent = b.name;
   const stats = document.getElementById("info-stats");
@@ -733,6 +825,19 @@ function showInfo(b) {
   if (b.kind === "sun") {
     blurb.textContent = "Our star. 99.86% of the solar system's mass.";
     stats.innerHTML = "<dt>Radius</dt><dd>696,000 km</dd>";
+  } else if (b.kind === "rocket") {
+    if (!mission) { blurb.textContent = "No active mission."; stats.innerHTML = ""; return; }
+    const tau = (simTime - mission.launchMs) / 1000;
+    missionPosKm(mission, tau, infoV1);
+    missionPosKm(mission, tau + 8, infoV2);
+    const alt = infoV1.length() - R_EARTH;
+    const spd = infoV2.distanceTo(infoV1) / 8;
+    const mdist = infoV1.distanceTo(moonGeoKm(mission.d0 + tau / 86400, infoV2));
+    blurb.textContent = `${mission.name} — ${missionPhase(mission, tau)}`;
+    stats.innerHTML =
+      `<dt>Altitude</dt><dd>${fmt(Math.max(alt, 0), 0)} km</dd>` +
+      `<dt>Speed</dt><dd>${fmt(spd, 2)} km/s</dd>` +
+      `<dt>Moon distance</dt><dd>${fmt(mdist, 0)} km</dd>`;
   } else if (b.kind === "moon") {
     blurb.textContent = `Moon of ${b.planet.name}.`;
     stats.innerHTML =
@@ -798,6 +903,259 @@ function setSidebarActive(name) {
   for (const r of REGIONS) navBtn(r.name, r.color, () => viewRegion(r));
 }
 
+/* ============================================================
+   Rocket launch simulation
+   Geocentric frame, scene axes, km & seconds. Parametric ascent
+   to a circular parking orbit, then RK4 integration under
+   Earth + Moon + Sun gravity. The TLI burn is auto-targeted:
+   burn when the parking-orbit position is opposite the Moon's
+   in-plane direction at arrival time, ΔV from the vis-viva
+   transfer ellipse. Visualization-grade, not mission-grade.
+   ============================================================ */
+const MU_E = 398600.4418, MU_M = 4902.800066, MU_S2 = 1.32712440018e11; // km³/s²
+const R_EARTH = 6371;
+const earthP = PLANETS.find(p => p.name === "Earth");
+const lunaM = earthP.moons[0];
+let mission = null;
+
+function greenwichAt(d, out) {
+  const era = 2 * Math.PI * (0.7790572732640 + 1.00273781191135448 * d);
+  return out.copy(equinoxDir).multiplyScalar(Math.cos(era))
+            .addScaledVector(earthEast, Math.sin(era));
+}
+function moonGeoKm(d, out) {
+  const ang = (lunaM.phase + lunaM.rate * d) * DEG;
+  return out.copy(earthP.moonU).multiplyScalar(lunaM.aKm * Math.cos(ang))
+            .addScaledVector(earthP.moonV, lunaM.aKm * Math.sin(ang));
+}
+function sunGeoKm(d, out) {
+  const el = elementsAt(earthP, d / 36525);
+  const xyz = eclPos(el, el.M);
+  return out.set(-xyz[0] * AU_KM, -xyz[2] * AU_KM, xyz[1] * AU_KM);
+}
+// launch-site direction (unit) in inertial scene axes for a given epoch
+function siteDir(d, latR, lonR, out, tmpG, tmpE) {
+  greenwichAt(d, tmpG);
+  tmpE.crossVectors(earthPole, tmpG); // east of the prime meridian
+  return out.copy(tmpG).multiplyScalar(Math.cos(latR) * Math.cos(lonR))
+            .addScaledVector(tmpE, Math.cos(latR) * Math.sin(lonR))
+            .addScaledVector(earthPole, Math.sin(latR)).normalize();
+}
+
+const accM = new THREE.Vector3(), accS = new THREE.Vector3(), accD = new THREE.Vector3();
+function accel(d, p, out) {
+  const r2 = p.lengthSq(), r = Math.sqrt(r2);
+  out.copy(p).multiplyScalar(-MU_E / (r2 * r));
+  moonGeoKm(d, accM);
+  accD.copy(accM).sub(p);
+  const dm = accD.length(), rm = accM.length();
+  out.addScaledVector(accD, MU_M / (dm * dm * dm))
+     .addScaledVector(accM, -MU_M / (rm * rm * rm));
+  sunGeoKm(d, accS);
+  accD.copy(accS).sub(p);
+  const ds = accD.length(), rs = accS.length();
+  out.addScaledVector(accD, MU_S2 / (ds * ds * ds))
+     .addScaledVector(accS, -MU_S2 / (rs * rs * rs));
+  return out;
+}
+
+function computeTrajectory(cfg) {
+  const d0 = daysSinceJ2000(cfg.launchMs);
+  const latR = cfg.lat * DEG, lonR = cfg.lon * DEG, azR = cfg.az * DEG;
+  const V = () => new THREE.Vector3();
+  const rhat = siteDir(d0, latR, lonR, V(), V(), V());
+  const east = V().crossVectors(earthPole, rhat).normalize();
+  const north = V().crossVectors(rhat, east).normalize();
+  const dhat = V().copy(east).multiplyScalar(Math.sin(azR))
+                  .addScaledVector(north, Math.cos(azR)).normalize();
+  const rp = R_EARTH + cfg.altKm;
+  const thetaTot = 22 * DEG;          // downrange angle at orbital insertion
+  const Ta = cfg.ascentSec;
+  function ascentPos(t, out) {
+    const s = Math.min(Math.max(t / Ta, 0), 1);
+    const h = cfg.altKm * s * s * (3 - 2 * s);
+    const th = thetaTot * s * s;
+    return out.copy(rhat).multiplyScalar(Math.cos(th))
+              .addScaledVector(dhat, Math.sin(th)).multiplyScalar(R_EARTH + h);
+  }
+
+  const ts = [], px = [], py = [], pz = [];
+  const pushSample = (t, p) => { ts.push(t); px.push(p.x); py.push(p.y); pz.push(p.z); };
+  const w = V();
+  for (let t = 0; t < Ta; t += 5) pushSample(t, ascentPos(t, w));
+
+  // orbital insertion: circular velocity along the ascent tangent
+  const pos = ascentPos(Ta, V());
+  const that = V().copy(rhat).multiplyScalar(-Math.sin(thetaTot))
+                  .addScaledVector(dhat, Math.cos(thetaTot)).normalize();
+  const vCirc = Math.sqrt(MU_E / rp);
+  const vel = V().copy(that).multiplyScalar(vCirc);
+  pushSample(Ta, pos);
+
+  const events = { insertion: Ta, tli: -1, dv: 0, closestMoonKm: Infinity,
+                   closestMoonT: -1, end: cfg.days * 86400, ended: "nominal" };
+
+  // --- TLI targeting ---
+  if (cfg.tli) {
+    const n = Math.sqrt(MU_E / (rp * rp * rp));   // parking mean motion, rad/s
+    let ra = 384400, Ttr = 0;
+    for (let i = 0; i < 3; i++) {                 // converge transfer time vs Moon distance
+      const a = (rp + ra) / 2;
+      Ttr = Math.PI * Math.sqrt(a * a * a / MU_E);
+      ra = moonGeoKm(d0 + (Ta + Ttr) / 86400, w).length();
+    }
+    const rhatI = V().copy(pos).normalize();
+    const wHat = V().crossVectors(pos, vel).normalize();
+    const mIn = V(), rT = V();
+    let best = 1e9, tBurn = -1;
+    const tMax = Ta + 2.2 * 2 * Math.PI / n;
+    for (let tb = Ta + 300; tb < tMax; tb += 10) {
+      moonGeoKm(d0 + (tb + Ttr) / 86400, mIn);
+      mIn.addScaledVector(wHat, -mIn.dot(wHat)).normalize();  // project into orbit plane
+      const th = n * (tb - Ta);
+      rT.copy(rhatI).multiplyScalar(Math.cos(th)).addScaledVector(that, Math.sin(th));
+      const err = rT.angleTo(mIn.negate());
+      if (err < best) { best = err; tBurn = tb; }
+    }
+    events.tli = tBurn;
+    events.dv = Math.sqrt(MU_E * (2 / rp - 2 / (rp + ra))) - vCirc;
+  }
+
+  // --- numeric propagation (RK4) ---
+  const p = pos.clone(), v = vel.clone();
+  const k1 = V(), k2 = V(), k3 = V(), k4 = V(), p2 = V(), v2 = V(), p3 = V(), v3 = V(), p4 = V(), v4 = V();
+  let t = Ta, burnDone = !cfg.tli;
+  const tEnd = cfg.days * 86400;
+  while (t < tEnd) {
+    const r = p.length();
+    let h = r < 20000 ? 10 : r < 100000 ? 60 : 240;
+    if (!burnDone && t < events.tli && t + h > events.tli) h = events.tli - t;
+    const dd = d0 + t / 86400, hd = h / 86400;
+    accel(dd, p, k1);
+    p2.copy(p).addScaledVector(v, h / 2);  v2.copy(v).addScaledVector(k1, h / 2);
+    accel(dd + hd / 2, p2, k2);
+    p3.copy(p).addScaledVector(v2, h / 2); v3.copy(v).addScaledVector(k2, h / 2);
+    accel(dd + hd / 2, p3, k3);
+    p4.copy(p).addScaledVector(v3, h);     v4.copy(v).addScaledVector(k3, h);
+    accel(dd + hd, p4, k4);
+    p.addScaledVector(v, h / 6).addScaledVector(v2, h / 3)
+     .addScaledVector(v3, h / 3).addScaledVector(v4, h / 6);
+    v.addScaledVector(k1, h / 6).addScaledVector(k2, h / 3)
+     .addScaledVector(k3, h / 3).addScaledVector(k4, h / 6);
+    t += h;
+    if (!burnDone && Math.abs(t - events.tli) < 0.5) {
+      v.addScaledVector(v.clone().normalize(), events.dv);
+      burnDone = true;
+    }
+    pushSample(t, p);
+    const md = p.distanceTo(moonGeoKm(d0 + t / 86400, w));
+    if (md < events.closestMoonKm) { events.closestMoonKm = md; events.closestMoonT = t; }
+    if (p.length() < R_EARTH) { events.end = t; events.ended = "reentry"; break; }
+  }
+
+  return { cfg, d0, launchMs: cfg.launchMs, ts, px, py, pz, events,
+           latR, lonR, name: cfg.name || "Rocket" };
+}
+
+// geocentric position (km) at τ seconds after launch
+const sdG = new THREE.Vector3(), sdE = new THREE.Vector3();
+function missionPosKm(m, tau, out) {
+  if (tau <= 0) {
+    return siteDir(m.d0 + tau / 86400, m.latR, m.lonR, out, sdG, sdE).multiplyScalar(R_EARTH);
+  }
+  const ts = m.ts;
+  if (tau >= ts[ts.length - 1]) tau = ts[ts.length - 1];
+  let lo = 0, hi = ts.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ts[mid] <= tau) lo = mid; else hi = mid; }
+  const f = (tau - ts[lo]) / (ts[hi] - ts[lo] || 1);
+  return out.set(m.px[lo] + (m.px[hi] - m.px[lo]) * f,
+                 m.py[lo] + (m.py[hi] - m.py[lo]) * f,
+                 m.pz[lo] + (m.pz[hi] - m.pz[lo]) * f);
+}
+function missionPhase(m, tau) {
+  const e = m.events;
+  if (tau < 0) return "on the pad, T−" + fmt(Math.ceil(-tau), 0) + " s";
+  if (tau <= e.insertion) return "ascent";
+  if (tau >= e.end) return e.ended === "reentry" ? "reentry / splashdown" : "mission complete";
+  if (e.tli < 0) return "in Earth orbit";
+  if (tau < e.tli) return "parking orbit";
+  if (tau < e.closestMoonT) return "translunar coast";
+  return "return cruise";
+}
+
+/* --- mission path line --- */
+let missionLine = null;
+function setMissionLine(m) {
+  if (missionLine) { scene.remove(missionLine); missionLine.geometry.dispose(); missionLine = null; }
+  if (!m) return;
+  const stride = Math.max(1, Math.floor(m.ts.length / 8000));
+  const npts = Math.floor((m.ts.length - 1) / stride) + 1;
+  const arr = new Float32Array(npts * 3);
+  for (let i = 0, j = 0; i < m.ts.length; i += stride, j++) {
+    arr[j * 3] = kmU(m.px[i]); arr[j * 3 + 1] = kmU(m.py[i]); arr[j * 3 + 2] = kmU(m.pz[i]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  missionLine = new THREE.Line(geo, new THREE.LineBasicMaterial({
+    color: 0x6ea8ff, transparent: true, opacity: 0.55 }));
+  missionLine.frustumCulled = false;
+  scene.add(missionLine);
+}
+
+/* --- launch panel wiring --- */
+const lEl = id => document.getElementById(id);
+function fillArtemis() {
+  lEl("l-date").value = "2026-02-26T22:00";
+  lEl("l-lat").value = 28.573;   // Kennedy LC-39B
+  lEl("l-lon").value = -80.649;
+  lEl("l-az").value = 90;
+  lEl("l-alt").value = 185;
+  lEl("l-asc").value = 510;
+  lEl("l-tli").checked = true;
+  lEl("l-days").value = 10;
+  lEl("l-status").textContent = "Artemis II loaded — free-return flight around the Moon. Press Launch.";
+}
+lEl("l-artemis").addEventListener("click", () => { fillArtemis(); lEl("l-artemis").dataset.loaded = "1"; });
+lEl("l-clear").addEventListener("click", () => {
+  mission = null;
+  setMissionLine(null);
+  rocketBody.hidden = true;
+  rocketBody.mesh.visible = false;
+  lEl("l-status").textContent = "";
+  if (focus === rocketBody) focusOn(sunBody);
+});
+lEl("l-launch").addEventListener("click", () => {
+  const dateVal = lEl("l-date").value;
+  if (!dateVal) { lEl("l-status").textContent = "Set a launch time first (or load Artemis II)."; return; }
+  const cfg = {
+    launchMs: new Date(dateVal).getTime(),
+    lat: parseFloat(lEl("l-lat").value) || 0,
+    lon: parseFloat(lEl("l-lon").value) || 0,
+    az: parseFloat(lEl("l-az").value) || 90,
+    altKm: Math.max(parseFloat(lEl("l-alt").value) || 185, 120),
+    ascentSec: Math.max(parseFloat(lEl("l-asc").value) || 510, 120),
+    tli: lEl("l-tli").checked,
+    days: Math.min(Math.max(parseFloat(lEl("l-days").value) || 10, 0.1), 60),
+    name: lEl("l-artemis").dataset.loaded === "1" ? "Artemis II" : "Rocket",
+  };
+  mission = computeTrajectory(cfg);
+  setMissionLine(mission);
+  rocketBody.hidden = false;
+  rocketBody.mesh.visible = true;
+  rocketBody.label.textContent = mission.name;
+  rocketBody.name = mission.name;
+  const e = mission.events;
+  let s = `Orbit insertion T+${fmt(e.insertion / 60, 1)} min.`;
+  if (e.tli > 0) {
+    s += ` TLI burn T+${fmt(e.tli / 60, 0)} min, ΔV ${fmt(e.dv, 2)} km/s.` +
+         ` Closest lunar approach ${fmt(e.closestMoonKm, 0)} km at T+${fmt(e.closestMoonT / 86400, 1)} d.`;
+  }
+  if (e.ended === "reentry") s += ` Reentry at T+${fmt(e.end / 86400, 1)} d.`;
+  lEl("l-status").textContent = s;
+  simTime = cfg.launchMs - 30000;   // jump to T−30 s; use the speed buttons to watch
+  focusOn(rocketBody);
+});
+
 /* --- ?focus=Name[&dist=km] deep link: fly there on load, arriving on the sunlit side --- */
 const urlParams = new URLSearchParams(location.search);
 const urlFocusName = urlParams.get("focus");
@@ -847,6 +1205,31 @@ const roDist = document.getElementById("readout-dist");
 const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3();
 let infoTick = 0;
 
+const mpK = new THREE.Vector3(), mpK2 = new THREE.Vector3();
+const mpDir = new THREE.Vector3(), mpScene = new THREE.Vector3();
+const upY = new THREE.Vector3(0, 1, 0);
+function updateMission() {
+  const tau = (simTime - mission.launchMs) / 1000;
+  missionPosKm(mission, tau, mpK);
+  rocketBody.abs.set(earthBody.abs.x + kmU(mpK.x),
+                     earthBody.abs.y + kmU(mpK.y),
+                     earthBody.abs.z + kmU(mpK.z));
+  // point the nose along the direction of motion (radial while on the pad)
+  missionPosKm(mission, tau + 8, mpK2);
+  mpDir.copy(mpK2).sub(mpK);
+  if (mpDir.lengthSq() < 1e-10) mpDir.copy(mpK);
+  rocketBody.mesh.quaternion.setFromUnitVectors(upY, mpDir.normalize());
+  // adaptive visual scale so the (real ~100 m) rocket stays visible at any zoom
+  mpScene.copy(rocketBody.abs).sub(focus.abs);
+  const cd = mpScene.distanceTo(camera.position);
+  const s = Math.max(kmU(0.1), cd * 0.09);
+  rocketBody.mesh.scale.setScalar(s);
+  rocketBody.effR = s * 0.5;
+  const e = mission.events;
+  rocketBody.mesh.userData.flame.visible =
+    (tau >= 0 && tau <= e.insertion) || (e.tli > 0 && tau >= e.tli && tau <= e.tli + 180);
+}
+
 function updatePositions(T, d) {
   for (const p of PLANETS) {
     const el = elementsAt(p, T);
@@ -869,6 +1252,7 @@ function updateLabels() {
   // zoomed out past ~650 AU the planet labels all collapse onto the Sun — hide them
   const farOut = camera.position.distanceTo(controls.target) > 1e5;
   for (const b of bodies) {
+    if (b.hidden) { b.screen = null; b.label.style.display = "none"; continue; }
     tmp.copy(b.abs).sub(focusCenter).sub(controls.target);
     const dist = tmp.length();
     tmp.copy(b.abs).sub(focusCenter).project(camera);
@@ -921,6 +1305,7 @@ function frame(now) {
   const d = daysSinceJ2000(simTime);
   updateOrbitLines(T);
   updatePositions(T, d);
+  if (mission) updateMission();
 
   if (pendingFocus) {        // deep link: positions are now known, fly there
     focusOn(pendingFocus);
@@ -946,6 +1331,7 @@ function frame(now) {
   sunBody.glow.scale.setScalar(Math.max(sunBody.effR * 14, sunCamDist * 0.045));
   for (const line of orbitLines) line.position.copy(focusCenter).negate();
   for (const pts of helioStatics) pts.position.copy(focusCenter).negate();
+  if (missionLine) missionLine.position.copy(earthBody.abs).sub(focusCenter);
 
   updateEarthOrientation(d);
   if (earthClouds) earthClouds.rotation.y += dt * speed * 2e-9; // slow drift relative to surface
@@ -958,7 +1344,8 @@ function frame(now) {
   updateLabels();
 
   // keep the info panel's live values (e.g. distance from Sun) fresh
-  if (infoEl.style.display === "block" && !infoIsCustom && ++infoTick % 30 === 0) showInfo(focus);
+  if (infoEl.style.display === "block" && !infoIsCustom &&
+      (focus.kind === "rocket" || ++infoTick % 10 === 0)) showInfo(focus);
 
   // HUD
   const dte = new Date(simTime);
