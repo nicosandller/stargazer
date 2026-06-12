@@ -969,7 +969,9 @@ function bestLaunchWindow(cfg) {
         wv = new THREE.Vector3(), mv = new THREE.Vector3();
   const latR = cfg.lat * DEG, lonR = cfg.lon * DEG, azR = cfg.az * DEG;
   const tArr = cfg.ascentSec + 3 * 3600 + 4.97 * 86400;  // ≈ ascent + short loiter + transfer
-  let bestMs = cfg.launchMs, bestErr = Infinity;
+  // the plane sweeps past the Moon's direction twice a day — return both windows
+  const mins = [];   // local minima of plane error: {ms, err}
+  let prev = Infinity, prevMs = 0, rising = true;
   for (let off = -12 * 3600; off <= 12 * 3600; off += 120) {
     const ms = cfg.launchMs + off * 1000, d0 = daysSinceJ2000(ms);
     siteDir(d0, latR, lonR, rh, G, E);
@@ -979,9 +981,12 @@ function bestLaunchWindow(cfg) {
     wv.crossVectors(rh, dh).normalize();
     moonGeoKm(d0 + tArr / 86400, mv).normalize();
     const err = Math.abs(wv.dot(mv));
-    if (err < bestErr) { bestErr = err; bestMs = ms; }
+    if (err < prev) rising = false;
+    else { if (!rising) mins.push({ ms: prevMs, err: prev }); rising = true; }
+    prev = err; prevMs = ms;
   }
-  return bestMs;
+  mins.sort((a, b) => a.err - b.err);
+  return mins.slice(0, 2).map(m => m.ms);
 }
 
 function computeTrajectory(cfg) {
@@ -1061,11 +1066,14 @@ function computeTrajectory(cfg) {
       return { peri: moonMin, ret: earthMin };
     }
     // free-return objective: perilune in a 3,000–16,000 km band AND a return
-    // perigee at the top of Earth's atmosphere
+    // perigee at the top of Earth's atmosphere; loiter is penalized so the
+    // burn happens within the first orbits, like a real mission
+    const LOITER_PENALTY = 0.012;   // km of score per second of parking time
     function flybyScore(tb, dv) {
       const f = flybyMetrics(tb, dv);
       let s = Math.max(0, f.peri - 16000) + Math.max(0, 3000 - f.peri);
       s += f.ret < Infinity ? 0.5 * Math.abs(f.ret - 6450) : 20000;
+      s += (tb - Ta) * LOITER_PENALTY;
       return s;
     }
 
@@ -1086,12 +1094,12 @@ function computeTrajectory(cfg) {
       else { if (!rising) cands.push({ tb: prevTb, est: prevEst }); rising = true; }
       prevEst = est; prevTb = tb;
     }
-    cands.sort((a, b) => a.est - b.est);
+    cands.sort((a, b) => (a.est + (a.tb - Ta) * 0.05) - (b.est + (b.tb - Ta) * 0.05));
 
     // numeric refinement toward a close flyby with a free return to Earth
     let best = { score: Infinity, tb: Ta + 600, dv: dv0 };
     let evals = 0;
-    for (const c of cands.slice(0, 3)) {
+    for (const c of cands.slice(0, 4)) {
       let tb = c.tb, dv = dv0;
       let score = flybyScore(tb, dv);
       for (const [dT, dDv] of [[600, 0.03], [150, 0.01], [40, 0.003], [10, 0.001]]) {
@@ -1145,6 +1153,7 @@ function computeTrajectory(cfg) {
         }
         let s = Math.max(0, moonMin - 16000) + Math.max(0, 3000 - moonMin);
         s += earthMin < Infinity ? 0.5 * Math.abs(earthMin - 6450) : 20000;
+        s += (tb - Ta) * LOITER_PENALTY;
         return s;
       }
       let tb = arcAt(best.tb).t, dv = best.dv;
@@ -1319,15 +1328,17 @@ lEl("l-launch").addEventListener("click", () => {
   const requestedMs = cfg.launchMs;
   mission = computeTrajectory(cfg);
   if (cfg.tli && cfg.window) {
-    // also try the plane-aligned launch window; keep whichever flyby is better
-    const winMs = bestLaunchWindow(cfg);
-    if (Math.abs(winMs - requestedMs) > 60000) {
+    // also try the plane-aligned launch windows; keep whichever flyby is best
+    // (free return first, then close pass, then shortest parking loiter)
+    const score = m => {
+      const e = m.events, peri = e.closestMoonKm;
+      return (e.ended === "reentry" ? 0 : 50000) +
+             Math.max(0, peri - 16000) + Math.max(0, 3000 - peri) +
+             (e.tli > 0 ? (e.tli - e.insertion) * 0.012 : 0);
+    };
+    for (const winMs of bestLaunchWindow(cfg)) {
+      if (Math.abs(winMs - requestedMs) < 60000) continue;
       const alt = computeTrajectory({ ...cfg, launchMs: winMs });
-      const score = m => {
-        const e = m.events, peri = e.closestMoonKm;
-        return (e.ended === "reentry" ? 0 : 50000) +
-               Math.max(0, peri - 16000) + Math.max(0, 3000 - peri);
-      };
       if (score(alt) < score(mission)) { mission = alt; cfg.launchMs = winMs; }
     }
   }
