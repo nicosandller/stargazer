@@ -211,11 +211,11 @@ const kmU = v => v / UNIT_KM;
 
 /* --- JPL approximate elements: [a, e, I, L, longPeri, longNode] + rates/century --- */
 const PLANETS = [
-  { name: "Mercury", color: 0xb5a698, radiusKm: 2440,
+  { name: "Mercury", color: 0xb5a698, radiusKm: 2440, tex: "assets/2k_mercury.jpg",
     el: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],
     rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
     blurb: "Smallest planet, closest to the Sun. A year here lasts 88 Earth days." },
-  { name: "Venus", color: 0xe8c98a, radiusKm: 6052,
+  { name: "Venus", color: 0xe8c98a, radiusKm: 6052, tex: "assets/2k_venus_atmosphere.jpg",
     el: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255],
     rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418],
     blurb: "Hottest planet, wrapped in crushing CO₂ clouds. Spins backwards, slowly." },
@@ -224,9 +224,11 @@ const PLANETS = [
     rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
     blurb: "Home. The only known world with liquid-water oceans and life.",
     moons: [
-      { name: "Moon", aKm: 384400, phase: 218.316, rate: 13.176396, radiusKm: 1737 },
+      { name: "Moon", aKm: 384400, phase: 218.316, rate: 13.176396, radiusKm: 1737,
+        tex: "assets/2k_moon.jpg" },
     ] },
-  { name: "Mars", color: 0xd1684a, radiusKm: 3390,
+  { name: "Mars", color: 0xd1684a, radiusKm: 3390, tex: "assets/2k_mars.jpg",
+    pole: { lon: 352.9, lat: 63.28 },
     el: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891],
     rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343],
     blurb: "The red planet — rusty deserts, the solar system's tallest volcano, and two tiny captured moons.",
@@ -234,11 +236,11 @@ const PLANETS = [
       { name: "Phobos", aKm: 9376, period: 0.3189, radiusKm: 11 },
       { name: "Deimos", aKm: 23463, period: 1.2624, radiusKm: 6 },
     ] },
-  { name: "Ceres", color: 0x9a9a8e, radiusKm: 473, dwarf: true,
+  { name: "Ceres", color: 0x9a9a8e, radiusKm: 473, dwarf: true, tex: "assets/2k_ceres_fictional.jpg",
     el: [2.7675, 0.0758, 10.594, 249.9, 153.9, 80.31],
     rate: [0, 0, 0, 7822, 0, 0],
     blurb: "The largest object in the asteroid belt — a dwarf planet hiding briny water under its crust." },
-  { name: "Jupiter", color: 0xd9b38c, radiusKm: 69911,
+  { name: "Jupiter", color: 0xd9b38c, radiusKm: 69911, tex: "assets/2k_jupiter.jpg",
     el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909],
     rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
     blurb: "The giant — more massive than all other planets combined. Watch its moons cast shadows on the cloud tops.",
@@ -248,7 +250,7 @@ const PLANETS = [
       { name: "Ganymede", aKm: 1070412, phase: 120.559, rate: 50.317609,  radiusKm: 2634 },
       { name: "Callisto", aKm: 1882709, phase: 84.445,  rate: 21.571071,  radiusKm: 2410 },
     ] },
-  { name: "Saturn", color: 0xe3d3a3, radiusKm: 58232,
+  { name: "Saturn", color: 0xe3d3a3, radiusKm: 58232, tex: "assets/2k_saturn.jpg",
     ring: { inner: 1.24, outer: 2.27 },
     pole: { lon: 79.5, lat: 61.96 },   // ecliptic coords of north pole
     el: [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448],
@@ -263,7 +265,7 @@ const PLANETS = [
       { name: "Titan",     aKm: 1221870, period: 15.945, radiusKm: 2575 },
       { name: "Iapetus",   aKm: 3560820, period: 79.322, radiusKm: 735 },
     ] },
-  { name: "Uranus", color: 0x9fd8d8, radiusKm: 25362,
+  { name: "Uranus", color: 0x9fd8d8, radiusKm: 25362, tex: "assets/2k_uranus.jpg",
     pole: { lon: 257.3, lat: -15.2 },  // tipped past sideways
     el: [19.18916464, 0.04725744, 0.77263783, 313.23810451, 170.95427630, 74.01692503],
     rate: [-0.00196176, -0.00004397, -0.00242939, 428.48202785, 0.40805281, 0.04240589],
@@ -275,7 +277,7 @@ const PLANETS = [
       { name: "Titania", aKm: 435910, period: 8.706, radiusKm: 789 },
       { name: "Oberon",  aKm: 583520, period: 13.46, radiusKm: 761 },
     ] },
-  { name: "Neptune", color: 0x5c7fe8, radiusKm: 24622,
+  { name: "Neptune", color: 0x5c7fe8, radiusKm: 24622, tex: "assets/2k_neptune.jpg",
     el: [30.06992276, 0.00859048, 1.77004347, -55.12002969, 44.96476227, 131.78422574],
     rate: [0.00026291, 0.00005105, 0.00035372, 218.45945325, -0.32241464, -0.00508664],
     blurb: "The windiest world — supersonic storms. Its moon Triton orbits backwards.",
@@ -289,7 +291,7 @@ const PLANETS = [
     moons: [
       { name: "Charon", aKm: 19591, period: 6.387, radiusKm: 606 },
     ] },
-  { name: "Eris", color: 0xd8d8e8, radiusKm: 1163, dwarf: true,
+  { name: "Eris", color: 0xd8d8e8, radiusKm: 1163, dwarf: true, tex: "assets/2k_eris_fictional.jpg",
     el: [67.86, 0.4361, 44.04, 21.8, 187.59, 35.95],
     rate: [0, 0, 0, 64.5, 0, 0],
     blurb: "The most massive known dwarf planet, three times farther out than Pluto. Its discovery is what got Pluto reclassified." },
@@ -456,10 +458,12 @@ const texLoader = new THREE.TextureLoader();
 function loadColorTexture(url) {
   const t = texLoader.load(url);
   t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return t;
 }
 let earthClouds = null;
 let earthBody = null;
+let luna = null;            // Earth's Moon — tidally locked, near side faces Earth
 // Earth's north pole in ecliptic coords: lon 90°, lat 90° − 23.439°
 const earthPole = eclDirToScene(poleVector({ lon: 90, lat: 66.561 }));
 const equinoxDir = new THREE.Vector3(1, 0, 0);            // vernal equinox (shared x-axis)
@@ -526,22 +530,37 @@ for (const p of PLANETS) {
       map: loadColorTexture("assets/earth_clouds_1024.png"),
       transparent: true, depthWrite: false, roughness: 1, metalness: 0 }));
     earthClouds.scale.setScalar(1.015);
+  } else if (p.tex) {
+    mat = new THREE.MeshStandardMaterial({ map: loadColorTexture(p.tex), roughness: 0.95, metalness: 0 });
   } else {
     mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.95, metalness: 0 });
   }
   const mesh = new THREE.Mesh(sphereGeo, mat);
   mesh.castShadow = mesh.receiveShadow = true;
+  // axial tilt, so surface bands / poles point the right way (Earth is set per frame)
+  if (p.pole) mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+                                                 eclDirToScene(poleVector(p.pole)));
   if (p.name === "Earth") mesh.add(earthClouds);
   scene.add(mesh);
 
   if (p.ring) {
     const rg = new THREE.RingGeometry(p.ring.inner, p.ring.outer, 128);
-    const rm = new THREE.MeshStandardMaterial({ color: 0xd8c8a0, roughness: 1, metalness: 0,
-      side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+    // remap UVs radially so the ring texture strip runs inner edge → outer edge
+    const rp = rg.attributes.position, ruv = rg.attributes.uv;
+    for (let i = 0; i < rp.count; i++) {
+      const r = Math.hypot(rp.getX(i), rp.getY(i));
+      ruv.setXY(i, (r - p.ring.inner) / (p.ring.outer - p.ring.inner), 0.5);
+    }
+    const ringTex = loadColorTexture("assets/2k_saturn_ring_alpha.png");
+    const rm = new THREE.MeshStandardMaterial({ map: ringTex, roughness: 1, metalness: 0,
+      side: THREE.DoubleSide, transparent: true });
     const ring = new THREE.Mesh(rg, rm);
     ring.castShadow = ring.receiveShadow = true;
-    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1),
-                                       eclDirToScene(poleVector(p.pole)));
+    // alpha-tested depth material so ring gaps don't cast solid shadows
+    ring.customDepthMaterial = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking, map: ringTex, alphaTest: 0.4 });
+    // the parent mesh already carries the axial tilt — lay the ring into its equator
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
     mesh.add(ring);   // inherits planet position & scale
   }
 
@@ -572,8 +591,9 @@ for (const p of PLANETS) {
       if (m.period === undefined) m.period = 360 / m.rate;
       p.systemRadiusU = Math.max(p.systemRadiusU, m.aU);
 
-      const mm = new THREE.Mesh(sphereGeo,
-        new THREE.MeshStandardMaterial({ color: 0xaab4cc, roughness: 0.95, metalness: 0 }));
+      const mm = new THREE.Mesh(sphereGeo, m.tex
+        ? new THREE.MeshStandardMaterial({ map: loadColorTexture(m.tex), roughness: 0.95, metalness: 0 })
+        : new THREE.MeshStandardMaterial({ color: 0xaab4cc, roughness: 0.95, metalness: 0 }));
       mm.castShadow = mm.receiveShadow = true;
       scene.add(mm);
 
@@ -594,6 +614,7 @@ for (const p of PLANETS) {
                      abs: new THREE.Vector3(), radiusU: m.radiusU,
                      label: makeLabel(m.name, "moon", () => focusOn(body)) };
       m.body = body;
+      if (p.name === "Earth" && m.name === "Moon") luna = body;
       bodies.push(body);
     }
   } else {
@@ -898,6 +919,10 @@ function frame(now) {
 
   updateEarthOrientation(d);
   if (earthClouds) earthClouds.rotation.y += dt * speed * 2e-9; // slow drift relative to surface
+  if (luna) {  // tidal lock: keep the near side (texture lon 0 = local +X) pointed at Earth
+    luna.mesh.rotation.y = Math.atan2(-(earthBody.abs.z - luna.abs.z),
+                                      earthBody.abs.x - luna.abs.x);
+  }
   updateSysLight();
   controls.update();
   updateLabels();

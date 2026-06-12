@@ -17,6 +17,11 @@ A sidebar lists every major body and region — click to fly there.
 - Time-warp buttons speed up, reverse, or pause time; **Now** snaps back to the present
 - `size` buttons can exaggerate body sizes ×10 / ×100 for easier sightseeing (distances stay real)
 
+## Credits
+
+- Earth surface & clouds: NASA Blue Marble (via the [three.js](https://github.com/mrdoob/three.js) examples)
+- All other planet, moon, and ring textures: [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0, based on NASA imagery; Ceres and Eris maps are artistic impressions)
+
 ## Run locally
 
 Serve it (ES modules need http):
