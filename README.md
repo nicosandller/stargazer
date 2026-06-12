@@ -1,5 +1,9 @@
 # Stargazer
 
+**▶ Live: [nicosandller.github.io/stargazer](https://nicosandller.github.io/stargazer/)**
+
+[![Earth, rendered live for the current time](assets/screenshot_earth.jpg)](https://nicosandller.github.io/stargazer/?focus=Earth&dist=26000)
+
 An explorable, real-time **3D** model of the solar system in a single HTML page (Three.js loaded from CDN — no build step).
 
 Everything is at **true scale**: real planet/moon sizes, real distances. Planets are placed using JPL's approximate Keplerian elements (valid 1800–2050 AD) in full 3D — including orbital inclination — computed for the visitor's current clock time. Moons use mean circular orbits in their planet's equatorial plane (visualization-grade).
@@ -15,12 +19,14 @@ A sidebar lists every major body and region — click to fly there.
 - **Drag** to orbit the view, **scroll / pinch** to zoom, **right-drag** to pan
 - **Click** a body (or its name) to fly there and see details
 - Time-warp buttons speed up, reverse, or pause time; **Now** snaps back to the present
+- Deep links: `?focus=Saturn` (optionally `&dist=500000` in km) opens the page flying to that body, arriving on its sunlit side
 - `size` buttons can exaggerate body sizes ×10 / ×100 for easier sightseeing (distances stay real)
 
 ## Credits
 
 - Earth surface & clouds: NASA Blue Marble (via the [three.js](https://github.com/mrdoob/three.js) examples)
 - All other planet, moon, and ring textures: [Solar System Scope](https://www.solarsystemscope.com/textures/) (CC BY 4.0, based on NASA imagery; Ceres and Eris maps are artistic impressions)
+- Pluto & Charon: NASA / JHUAPL / SwRI New Horizons maps (via Wikimedia Commons; their unmapped southern regions appear dark)
 
 ## Run locally
 
