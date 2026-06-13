@@ -919,6 +919,7 @@ function setSidebarActive(name) {
    ============================================================ */
 const MU_E = 398600.4418, MU_M = 4902.800066, MU_S2 = 1.32712440018e11; // km³/s²
 const R_EARTH = 6371;
+const R_ENTRY = R_EARTH + 100;   // atmospheric entry interface (~100 km) = reentry
 const earthP = PLANETS.find(p => p.name === "Earth");
 const lunaM = earthP.moons[0];
 let mission = null;
@@ -1027,7 +1028,7 @@ function computeTrajectory(cfg) {
   pushSample(Ta, pos);
 
   const events = { insertion: Ta, tli: -1, dv: 0, closestMoonKm: Infinity,
-                   closestMoonT: -1, end: Infinity, ended: "flying" };
+                   closestMoonT: -1, rb: -1, rbDv: 0, end: Infinity, ended: "flying" };
 
   // --- TLI targeting: burn time & ΔV refined against real propagated flybys ---
   if (cfg.tli) {
@@ -1053,21 +1054,24 @@ function computeTrajectory(cfg) {
       parkingState(tb, sp, sv);
       svn.copy(sv).normalize();
       sv.addScaledVector(svn, dv);
-      let t = tb, moonMin = Infinity, tMoonMin = 0, earthMin = Infinity;
+      let t = tb, moonMin = Infinity, tMoonMin = 0, earthMin = Infinity, farSide = false;
       while (t < tb + 12 * 86400) {
         const nearMoon = sp.distanceTo(moonGeoKm(d0 + t / 86400, smm)) < 40000;
         const h = nearMoon ? 60 : 240;
         rkStep(sp, sv, d0 + t / 86400, h);
         t += h;
         const md = sp.distanceTo(moonGeoKm(d0 + t / 86400, smm));
-        if (md < moonMin) { moonMin = md; tMoonMin = t; }
+        if (md < moonMin) {
+          moonMin = md; tMoonMin = t;
+          farSide = sp.length() > smm.length();   // beyond the Moon as seen from Earth
+        }
         const r = sp.length();
-        const pastFlyby = tMoonMin > 0 && t > tMoonMin + 3600;
+        const pastFlyby = moonMin < 60000 && t > tMoonMin + 3600;
         if (pastFlyby && r < earthMin) earthMin = r;
         if (r < R_EARTH) { earthMin = r; break; }
         if (pastFlyby && r > 480000) break;   // heading out again, no direct return
       }
-      return { peri: moonMin, ret: earthMin };
+      return { peri: moonMin, ret: earthMin, farSide };
     }
     // free-return objective: perilune in a 3,000–16,000 km band AND a return
     // perigee at the top of Earth's atmosphere; loiter is penalized so the
@@ -1078,6 +1082,7 @@ function computeTrajectory(cfg) {
       let s = Math.max(0, f.peri - 16000) + Math.max(0, 3000 - f.peri);
       s += f.ret < Infinity ? 0.5 * Math.abs(f.ret - 6450) : 20000;
       s += (tb - Ta) * LOITER_PENALTY;
+      if (!f.farSide) s += 8000;   // must round the far side, like the real figure-8
       return s;
     }
 
@@ -1140,7 +1145,7 @@ function computeTrajectory(cfg) {
         tp.copy(e0.p); tv.copy(e0.v);
         tvn.copy(tv).normalize();
         tv.addScaledVector(tvn, dv);
-        let tt = e0.t, moonMin = Infinity, tMoonMin = 0, earthMin = Infinity, md = Infinity;
+        let tt = e0.t, moonMin = Infinity, tMoonMin = 0, earthMin = Infinity, md = Infinity, farSide = false;
         while (tt < e0.t + 12 * 86400) {
           const r = tp.length();
           let h = r < 20000 ? 10 : r < 100000 ? 60 : 240;
@@ -1148,9 +1153,9 @@ function computeTrajectory(cfg) {
           rkStep(tp, tv, d0 + tt / 86400, h);
           tt += h;
           md = tp.distanceTo(moonGeoKm(d0 + tt / 86400, tmm));
-          if (md < moonMin) { moonMin = md; tMoonMin = tt; }
+          if (md < moonMin) { moonMin = md; tMoonMin = tt; farSide = tp.length() > tmm.length(); }
           const r2 = tp.length();
-          const past = tMoonMin > 0 && tt > tMoonMin + 3600;
+          const past = moonMin < 60000 && tt > tMoonMin + 3600;
           if (past && r2 < earthMin) earthMin = r2;
           if (r2 < R_EARTH) { earthMin = r2; break; }
           if (past && r2 > 480000) break;
@@ -1158,6 +1163,7 @@ function computeTrajectory(cfg) {
         let s = Math.max(0, moonMin - 16000) + Math.max(0, 3000 - moonMin);
         s += earthMin < Infinity ? 0.5 * Math.abs(earthMin - 6450) : 20000;
         s += (tb - Ta) * LOITER_PENALTY;
+        if (!farSide) s += 8000;
         return s;
       }
       let tb = arcAt(best.tb).t, dv = best.dv;
@@ -1177,14 +1183,79 @@ function computeTrajectory(cfg) {
     }
     events.tli = best.tb;
     events.dv = best.dv;
+
+    // --- automatic return-correction burn ---
+    // A passive free return only works when geometry allows it; otherwise the
+    // post-flyby orbit's perigee stays above the atmosphere and the ship loops
+    // out again. Like the real mission, fire a retrograde burn a few hours
+    // after the flyby (near apogee, where it's most efficient) and bisect its
+    // ΔV so the return perigee drops into the atmosphere — guaranteeing reentry.
+    const pp = V(), pv = V(), pw = V(), pmm = V();
+    // The return burn must fire on the descending leg AFTER the ship has left
+    // the Moon's vicinity (burning near the Moon is chaotic and inefficient at
+    // near-zero speed). RB_ALT km is a clean two-body point on the way down.
+    const RB_ALT = 150000;
+    function probeReturn(rbT, rbDv) {
+      pp.copy(pos); pv.copy(vel);
+      let t = Ta, tliDone = false, rbDone = !(rbT > 0);
+      let cmT = 0, cm = Infinity, reentered = false, perigee = Infinity;
+      let sawFlyby = false, prevR = Infinity, descended = false, descCrossT = 0;
+      while (t < Ta + 20 * 86400) {
+        const r = pp.length();
+        let h = r < 20000 ? 10 : r < 120000 ? 90 : 400;
+        if (cm < 60000 && !sawFlyby) h = Math.min(h, 60);
+        if (!tliDone && t < best.tb && t + h > best.tb) h = best.tb - t;
+        if (tliDone && !rbDone && t < rbT && t + h > rbT) h = rbT - t;
+        rkStep(pp, pv, d0 + t / 86400, h);
+        t += h;
+        if (!tliDone && Math.abs(t - best.tb) < 0.6) {
+          pw.copy(pv).normalize(); pv.addScaledVector(pw, best.dv); tliDone = true;
+        }
+        if (tliDone && !rbDone && Math.abs(t - rbT) < 0.6) {
+          pw.copy(pv).normalize(); pv.addScaledVector(pw, rbDv); rbDone = true;
+        }
+        const md = pp.distanceTo(moonGeoKm(d0 + t / 86400, pmm));
+        if (md < cm) { cm = md; cmT = t; }
+        const r2 = pp.length();
+        const past = cm < 60000 && t > cmT + 3600;   // only after a real flyby
+        if (past) {
+          sawFlyby = true;
+          if (descCrossT === 0 && r2 < RB_ALT) descCrossT = t;   // descending-leg burn point
+          perigee = Math.min(perigee, r2);
+          if (r2 < prevR) descended = true;
+        }
+        if (r2 < R_ENTRY) { reentered = true; break; }
+        if (past && descended && r2 > prevR + 800) break;   // post-flyby perigee passed
+        prevR = r2;
+      }
+      return { cmT, reentered, perigee, descCrossT };
+    }
+
+    const base = probeReturn(-1, 0);
+    if (!base.reentered && base.descCrossT > 0) {
+      const rbT = base.descCrossT;
+      let lo = 0, hi = 1.2;
+      // smallest retrograde ΔV that brings the ship to atmospheric reentry
+      if (probeReturn(rbT, -hi).reentered) {   // a return is reachable
+        for (let i = 0; i < 18; i++) {
+          const mid = (lo + hi) / 2;
+          if (probeReturn(rbT, -mid).reentered) hi = mid; else lo = mid;
+        }
+        events.rb = rbT;
+        events.rbDv = -hi;
+      }
+    }
   }
 
   const m = { cfg, d0, launchMs: cfg.launchMs, ts, px, py, pz, events, latR, lonR,
               name: cfg.name || "Rocket",
-              state: { p: pos.clone(), v: vel.clone(), t: Ta, burnDone: !cfg.tli, md: Infinity } };
-  propagateTo(m, cfg.days * 86400);
-  // peek a little further so an imminent reentry shows in the mission summary
-  if (m.events.ended === "flying") propagateTo(m, (cfg.days + 3) * 86400);
+              state: { p: pos.clone(), v: vel.clone(), t: Ta,
+                       burnDone: !cfg.tli, rbDone: false, md: Infinity } };
+  // cover the whole journey home when a return burn is planned, even past the
+  // requested duration, so the trip completes instead of freezing mid-flight
+  const planDays = Math.max(cfg.days, events.rb > 0 ? events.rb / 86400 + 5 : 0);
+  propagateTo(m, planDays * 86400);
+  if (m.events.ended === "flying") propagateTo(m, (planDays + 3) * 86400);
   return m;
 }
 
@@ -1217,6 +1288,7 @@ function propagateTo(m, tEnd) {
     let h = r < 20000 ? 10 : r < 100000 ? 60 : 240;
     if (st.md < 60000) h = Math.min(h, 60);   // fine steps near the Moon
     if (!st.burnDone && st.t < e.tli && st.t + h > e.tli) h = e.tli - st.t;
+    if (st.burnDone && !st.rbDone && e.rb > 0 && st.t < e.rb && st.t + h > e.rb) h = e.rb - st.t;
     rkStep(st.p, st.v, m.d0 + st.t / 86400, h);
     st.t += h;
     if (!st.burnDone && Math.abs(st.t - e.tli) < 0.5) {
@@ -1224,10 +1296,15 @@ function propagateTo(m, tEnd) {
       st.v.addScaledVector(propW, e.dv);
       st.burnDone = true;
     }
+    if (st.burnDone && !st.rbDone && e.rb > 0 && Math.abs(st.t - e.rb) < 0.5) {
+      propW.copy(st.v).normalize();
+      st.v.addScaledVector(propW, e.rbDv);   // retrograde return-correction burn
+      st.rbDone = true;
+    }
     m.ts.push(st.t); m.px.push(st.p.x); m.py.push(st.p.y); m.pz.push(st.p.z);
     st.md = st.p.distanceTo(moonGeoKm(m.d0 + st.t / 86400, propW));
     if (st.md < e.closestMoonKm) { e.closestMoonKm = st.md; e.closestMoonT = st.t; }
-    if (st.p.length() < R_EARTH) {
+    if (st.p.length() < R_ENTRY) {
       e.end = st.t; e.ended = "reentry";
       // landing point in Earth-fixed coordinates, so the craft rides the rotating Earth
       greenwichAt(m.d0 + st.t / 86400, sdG);
@@ -1269,6 +1346,7 @@ function missionPhase(m, tau) {
   if (e.tli < 0) return "in Earth orbit";
   if (tau < e.tli) return "parking orbit";
   if (tau < e.closestMoonT) return "translunar coast";
+  if (e.rb > 0 && Math.abs(tau - e.rb) < 60) return "return-correction burn";
   return "return cruise";
 }
 
@@ -1366,6 +1444,7 @@ lEl("l-launch").addEventListener("click", () => {
   if (e.tli > 0) {
     s += ` TLI burn T+${fmtT(e.tli)}, ΔV ${fmt(e.dv, 2)} km/s.` +
          ` Closest lunar approach ${fmt(e.closestMoonKm, 0)} km at T+${fmt(e.closestMoonT / 86400, 1)} d.`;
+    if (e.rb > 0) s += ` Return burn T+${fmtT(e.rb)}, ΔV ${fmt(Math.abs(e.rbDv), 2)} km/s.`;
   }
   if (e.ended === "reentry") s += ` Reentry at T+${fmt(e.end / 86400, 1)} d.`;
   else if (e.tli > 0) s += " No free return this window — after the flyby the ship coasts on a long Earth orbit.";
@@ -1452,7 +1531,9 @@ function updateMission() {
   rocketBody.effR = s * 0.5;
   const e = mission.events;
   rocketBody.mesh.userData.flame.visible =
-    (tau >= 0 && tau <= e.insertion) || (e.tli > 0 && tau >= e.tli && tau <= e.tli + 180);
+    (tau >= 0 && tau <= e.insertion) ||
+    (e.tli > 0 && tau >= e.tli && tau <= e.tli + 180) ||
+    (e.rb > 0 && tau >= e.rb && tau <= e.rb + 120);
 }
 
 function updatePositions(T, d) {
